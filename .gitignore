@@ -1,0 +1,7 @@
+node_modules
+dist
+.pio
+.vscode
+*.log
+.env
+.DS_Store
