@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "builds": [
+    {
+      "src": "simulator/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "simulator/dist"
+      }
+    }
+  ],
+  "routes": [
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "/simulator/dist/index.html" }
+  ]
+}
