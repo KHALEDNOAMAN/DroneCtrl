@@ -43,8 +43,8 @@ const Scene: React.FC<{
     if (keys['Shift']) throttle -= 2;
     if (keys['w']) pitch -= 0.5;
     if (keys['s']) pitch += 0.5;
-    if (keys['a']) roll -= 0.5;
-    if (keys['d']) roll += 0.5;
+    if (keys['a']) roll += 0.5;
+    if (keys['d']) roll -= 0.5;
     if (keys['q']) yaw += 1;
     if (keys['e']) yaw -= 1;
 
