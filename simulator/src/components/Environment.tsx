@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Grid, Sky } from '@react-three/drei';
 import { CHECKPOINTS } from '../utils/constants';
@@ -9,6 +9,21 @@ interface Props {
 
 export const WorldEnvironment: React.FC<Props> = ({ currentCheckpoint }) => {
   const ringsRef = useRef<any[]>([]);
+
+  // Generate tree positions ONCE — stable across re-renders
+  const trees = useMemo(() => {
+    const result: { x: number; z: number }[] = [];
+    // Use a seeded-style approach with fixed values
+    for (let i = 0; i < 50; i++) {
+      const angle = (i / 50) * Math.PI * 2 * 7.3; // spread in a pattern
+      const radius = 20 + (i * 3.7) % 80;
+      const x = Math.cos(angle) * radius;
+      const z = Math.sin(angle) * radius;
+      if (Math.abs(x) < 10 && Math.abs(z) < 10) continue; // keep center clear
+      result.push({ x, z });
+    }
+    return result;
+  }, []);
 
   useFrame((state) => {
     const t = state.clock.elapsedTime;
@@ -52,24 +67,19 @@ export const WorldEnvironment: React.FC<Props> = ({ currentCheckpoint }) => {
         );
       })}
 
-      {/* Some simple trees/obstacles */}
-      {Array.from({ length: 50 }).map((_, i) => {
-        const x = (Math.random() - 0.5) * 200;
-        const z = (Math.random() - 0.5) * 200;
-        if (Math.abs(x) < 10 && Math.abs(z) < 10) return null; // keep center clear
-        return (
-          <group key={`tree-${i}`} position={[x, 0, z]}>
-            <mesh position={[0, 2, 0]}>
-              <cylinderGeometry args={[0.5, 0.5, 4]} />
-              <meshStandardMaterial color="#3e2723" />
-            </mesh>
-            <mesh position={[0, 6, 0]}>
-              <coneGeometry args={[3, 8, 8]} />
-              <meshStandardMaterial color="#1b5e20" />
-            </mesh>
-          </group>
-        );
-      })}
+      {/* Trees — positions are stable (computed once via useMemo) */}
+      {trees.map((tree, i) => (
+        <group key={`tree-${i}`} position={[tree.x, 0, tree.z]}>
+          <mesh position={[0, 2, 0]}>
+            <cylinderGeometry args={[0.5, 0.5, 4]} />
+            <meshStandardMaterial color="#3e2723" />
+          </mesh>
+          <mesh position={[0, 6, 0]}>
+            <coneGeometry args={[3, 8, 8]} />
+            <meshStandardMaterial color="#1b5e20" />
+          </mesh>
+        </group>
+      ))}
     </>
   );
 };
