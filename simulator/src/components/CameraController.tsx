@@ -33,10 +33,11 @@ export const CameraController: React.FC<Props> = ({ dronePos, droneRot, mode }) 
       targetPos.copy(dronePos).add(CAMERA_OFFSETS.topDown);
     }
 
-    // Smooth camera movement
-    camera.position.lerp(targetPos, mode === 'fpv' ? 0.8 : 0.1);
+    // Smooth camera movement — use tighter follow to reduce world jitter
+    const lerpFactor = mode === 'fpv' ? 0.9 : Math.min(1, 6 * delta);
+    camera.position.lerp(targetPos, lerpFactor);
     
-    currentTarget.current.lerp(lookAtPos, mode === 'fpv' ? 0.8 : 0.1);
+    currentTarget.current.lerp(lookAtPos, lerpFactor);
     camera.lookAt(currentTarget.current);
   });
 
