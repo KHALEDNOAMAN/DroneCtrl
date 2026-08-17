@@ -13,6 +13,14 @@
 
 DroneCtrl is an open-source flight control system that bridges the gap between hardware engineering and software simulation. It provides a robust C++ firmware for ESP32/Arduino-based quadcopters, featuring real-time PID stabilization and sensor fusion. Alongside the firmware, it includes an interactive 3D web simulator to test algorithms and tune parameters safely before real-world flight.
 
+## Overview
+
+DroneCtrl is a complete quadcopter flight control system designed for learning and experimentation. It combines real ESP32/Arduino firmware with an interactive 3D web simulator, allowing you to understand drone stabilization without needing physical hardware.
+
+The system implements industry-standard techniques: PID control loops for attitude stabilization, complementary filter for sensor fusion, and motor mixing algorithms for translating desired movements into individual motor speeds.
+
+---
+
 ## ✨ Key Features
 
 - 🧠 **Real ESP32/Arduino firmware** for quadcopter control
@@ -121,7 +129,45 @@ Tuning is critical for stable flight. Start with these steps:
 - [ ] Return to home (RTH) failsafe
 - [ ] FPV camera feed streaming
 
-## 🤝 Contributing
+## 🤝 
+---
+
+## Screenshots & Demo
+
+### 3D Simulator
+```
+┌─────────────────────────────────────────────┐
+│  DroneCtrl - 3D Flight Simulator            │
+│  ┌───────────────────────────────────────┐  │
+│  │                                       │  │
+│  │        🚁  Quadcopter View            │  │
+│  │      Altitude: 15.2m                  │  │
+│  │      Roll: 2.3°  Pitch: -1.1°        │  │
+│  │      Yaw: 45.0°                       │  │
+│  │                                       │  │
+│  └───────────────────────────────────────┘  │
+│  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────────┐  │
+│  │Thrust│ │ Roll │ │Pitch │ │   Yaw    │  │
+│  │ 65%  │ │ 2.3° │ │-1.1° │ │  45.0°   │  │
+│  │ ████ │ │ ██   │ │ ██   │ │ ████     │  │
+│  └──────┘ └──────┘ └──────┘ └──────────┘  │
+└─────────────────────────────────────────────┘
+```
+
+### Telemetry Dashboard
+- Real-time attitude gauges (roll, pitch, yaw)
+- Motor speed indicators (M1-M4)
+- PID tuning sliders with live response
+- Altitude and GPS position display
+- Battery voltage monitoring
+
+### Live Demo
+> Run the simulator locally: `npm install && npm run dev`
+> Open `http://localhost:3000` in your browser
+> Use WASD keys to control the drone!
+
+
+Contributing
 Contributions are welcome! Please feel free to submit a Pull Request. Make sure to read our contributing guidelines before getting started.
 
 ## 📜 License
