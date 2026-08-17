@@ -1,7 +1,6 @@
 {
   "version": 2,
-  "buildCommand": "cd simulator && npm install && npm run build",
-  "outputDirectory": "simulator/dist",
   "installCommand": "cd simulator && npm install",
-  "framework": "vite"
+  "buildCommand": "cd simulator && npx vite build",
+  "outputDirectory": "simulator/dist"
 }
