@@ -30,9 +30,11 @@ The system implements industry-standard techniques: PID control loops for attitu
 - 📡 **MPU6050 IMU sensor fusion** (complementary filter)
 - 🗺️ **GPS waypoint navigation**
 - 🛡️ **Failsafe modes** (signal loss, low battery, geofence)
+- 🤖 **Waypoint autopilot** with cascaded guidance, velocity and attitude loops
 - 🎮 **Interactive 3D web simulator** (Three.js)
-- 📊 **Telemetry dashboard** with real-time gauges
-- 🎛️ **Configurable PID tuning interface**
+- 📊 **Telemetry dashboard** with real-time gauges and an artificial horizon
+- 🎛️ **Configurable PID tuning interface** with live controller output
+- ⏱️ **Fixed-timestep physics**, so flight behaviour does not change with frame rate
 
 ## 🏗️ Architecture
 
@@ -41,6 +43,20 @@ Sensors (IMU/GPS/Baro) → Sensor Fusion → PID Controller → Motor Mixer → 
                                            ↑
                                   Setpoint from RC/Waypoints
 ```
+
+In AUTO the setpoint comes from the autopilot rather than the sticks, through the
+same three nested loops a production flight stack uses:
+
+```text
+waypoint  →  position error   →  velocity setpoint      (guidance, ~ once per step)
+             velocity error   →  acceleration command   (velocity loop)
+             acceleration cmd →  roll / pitch / thrust  (attitude mapping)
+                              →  attitude PID → motor mixer
+```
+
+Only the outer two loops are autopilot-specific. The attitude loop is the same
+PID stack a pilot flies through by hand, so both modes share one controller and
+the tuning panel affects both.
 
 ## 🛠️ Tech Stack
 
@@ -84,8 +100,17 @@ The quadcopter uses an X-configuration. The motor mixer translates the aggregate
 ### Simulator
 To run the local 3D web simulator and telemetry dashboard:
 ```bash
+cd simulator
 npm install
 npm run dev
+```
+
+The control law has a headless test that flies the full circuit with no browser
+and no renderer, and fails if the autopilot cannot complete laps, drifts off
+heading, or behaves differently at a different timestep:
+```bash
+cd simulator
+npm run check
 ```
 
 ## 📂 Project Structure
@@ -97,8 +122,9 @@ DroneCtrl/
 │   ├── include/       # Headers, Config
 │   └── platformio.ini # Build configuration
 ├── simulator/         # Three.js 3D Web Simulator + React Telemetry HUD
-│   ├── src/           # TypeScript/React source
-│   └── public/        # Assets, 3D models
+│   ├── src/engine/    # Physics, PID controller, autopilot (no React, no renderer)
+│   ├── src/components/# Scene and HUD
+│   └── tools/         # Headless flight check
 └── docs/              # Documentation and wiring diagrams
 ```
 
@@ -117,15 +143,23 @@ Tuning is critical for stable flight. Start with these steps:
 | **Pitch Forward/Back** | `W` / `S` |
 | **Roll Left/Right** | `A` / `D` |
 | **Yaw Left/Right** | `Q` / `E` |
-| **Toggle Camera** | `C` |
-| **Toggle Wind** | `R` |
-| **Hide Help** | `?` |
+| **Toggle autopilot** | `M` |
+| **Cycle camera** (chase / cinematic / FPV / top-down) | `C` |
+| **Toggle wind** | `R` |
+| **PID tuning panel** | `P` |
+| **Toggle telemetry** | `T` |
+| **Hide help** | `H` |
+
+The simulator starts in **AUTO** and flies the circuit on its own. Touching any
+flight control hands you the aircraft, exactly as a ground station drops out of
+mission mode on manual input.
 
 ## 🗺️ Roadmap
 
 - [x] Basic stabilization
 - [x] 3D simulator
 - [x] GPS waypoints
+- [x] Waypoint autopilot in the simulator
 - [ ] Optical flow integration
 - [ ] Return to home (RTH) failsafe
 - [ ] FPV camera feed streaming
@@ -141,13 +175,16 @@ Tuning is critical for stable flight. Start with these steps:
 The HUD shows live altitude, speed, heading, battery, and per-motor RPM (FL/FR/RL/RR), plus a checkpoint counter for the built-in flight course.
 
 ### Live Demo
-No hosted demo yet — run it locally:
+**[drone-ctrl.vercel.app](https://drone-ctrl.vercel.app)** — runs in the browser,
+no install. It starts on autopilot, so you can watch it fly a lap before taking
+over.
+
+To run it locally instead:
 ```bash
 cd simulator
 npm install
 npm run dev
 ```
-Then open the printed local URL and use the controls above to fly.
 
 ## 🤝 Contributing
 Contributions are welcome! Please feel free to submit a Pull Request. Make sure to read [CONTRIBUTING.md](CONTRIBUTING.md) before getting started.

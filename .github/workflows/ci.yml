@@ -1,25 +1,51 @@
 name: CI
 on: [push, pull_request]
+
 jobs:
-  build:
+  firmware:
+    name: Firmware (PlatformIO)
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - name: Cache pip
-      uses: actions/cache@v3
-      with:
-        path: ~/.cache/pip
-        key: pip
-    - name: Cache PlatformIO
-      uses: actions/cache@v3
-      with:
-        path: ~/.platformio
-        key: pio
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.x'
-    - name: Install PlatformIO
-      run: python -m pip install --upgrade pip && pip install platformio
-    - name: Build project
-      run: pio run
+      - uses: actions/checkout@v4
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Install PlatformIO
+        run: python -m pip install --upgrade pip && pip install platformio
+      - name: Build firmware
+        run: pio run
+
+  simulator:
+    name: Simulator (typecheck, build, flight check)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: simulator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: simulator/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      # Flies the full circuit headlessly and fails on a control-law regression:
+      # no laps completed, heading not tracking the route, ground contact, or a
+      # result that changes when the timestep changes.
+      - name: Flight check
+        run: npm run check
