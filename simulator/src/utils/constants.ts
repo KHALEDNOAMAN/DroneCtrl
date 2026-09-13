@@ -89,20 +89,24 @@ export const CHECKPOINTS: Vector3[] = [
 export const GATE_RADIUS = 3.5;
 
 /**
- * The airframe is only ~0.45 m across, so the chase camera has to sit close for
- * the drone to read as more than a speck against 5 m gates.
+ * Camera offsets from the airframe, in metres.
+ *
+ * The airframe is only ~0.7 m across and the world it flies through is hundreds
+ * of metres wide, so these have to be tight or the drone reads as a speck. At
+ * the 2 m the chase view used to sit at, once follow lag was added, it filled
+ * under 6% of the frame.
  */
 export const CAMERA_OFFSETS = {
-  // Deliberately off the centreline: a chase camera directly behind the drone
-  // hides its own motion trail behind the airframe.
-  chase: new Vector3(0.75, 0.6, 2.0),
+  // Slightly off the centreline: a camera directly behind the drone hides its
+  // own motion trail behind the airframe.
+  chase: new Vector3(0.4, 0.28, 1.05),
   fpv: new Vector3(0, 0.12, -0.22),
   topDown: new Vector3(0, 30, 0.01),
 };
 
 /** Slow orbit used by the cinematic camera. */
 export const CINEMATIC = {
-  radius: 3.3,
-  height: 1.1,
+  radius: 2.1,
+  height: 0.75,
   orbitSpeed: 0.22, // rad/s
 };

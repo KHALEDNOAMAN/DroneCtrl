@@ -48,13 +48,14 @@ export const CameraController: React.FC<Props> = ({ posRef, rotRef, mode }) => {
     // FPV is rigidly mounted to the airframe; every other view is on a soft
     // gimbal, damped frame-rate independently so it behaves the same at 30 and
     // 144 fps.
-    // The cinematic view gets its smoothness from the slow orbit, not from a
-    // slack follow. Damping its position heavily just lets a 10 m/s drone
-    // outrun the camera until it is a speck at the edge of frame.
-    const positionResponse = mode === 'fpv' ? 40 : 9;
+    // Follow stiffly. A soft follow looks good on paper but at 10 m/s it leaves
+    // the camera metres behind where the offset says it should be, which is how
+    // the chase view ended up sitting 5 m back from a 0.66 m airframe. The
+    // cinematic view gets its smoothness from the slow orbit instead.
+    const positionResponse = mode === 'fpv' ? 40 : 18;
 
     // Aim faster still, so the subject stays centred through direction changes.
-    const aimResponse = mode === 'fpv' ? 40 : 20;
+    const aimResponse = mode === 'fpv' ? 40 : 26;
 
     camera.position.lerp(desired.current, 1 - Math.exp(-positionResponse * delta));
     smoothedTarget.current.lerp(lookAt.current, 1 - Math.exp(-aimResponse * delta));
