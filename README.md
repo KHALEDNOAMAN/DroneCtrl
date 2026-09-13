@@ -11,6 +11,8 @@
 
 </div>
 
+![DroneCtrl simulator in flight](assets/simulator-flight.png)
+
 DroneCtrl is an open-source flight control system that bridges the gap between hardware engineering and software simulation. It provides a robust C++ firmware for ESP32/Arduino-based quadcopters, featuring real-time PID stabilization and sensor fusion. Alongside the firmware, it includes an interactive 3D web simulator to test algorithms and tune parameters safely before real-world flight.
 
 ## Overview
@@ -47,8 +49,7 @@ Sensors (IMU/GPS/Baro) → Sensor Fusion → PID Controller → Motor Mixer → 
 | **Firmware** | C++, Arduino, ESP32, PlatformIO |
 | **Sensors** | MPU6050 (IMU), BMP280 (Barometer), GPS |
 | **Control** | PID loops, Complementary filter, Motor mixing |
-| **Simulator** | TypeScript, Three.js, WebGL |
-| **Dashboard** | React, Chart.js, WebSocket |
+| **Simulator & HUD** | TypeScript, React, Three.js (@react-three/fiber, @react-three/drei), WebGL |
 
 ## ⚙️ How It Works
 
@@ -95,10 +96,9 @@ DroneCtrl/
 │   ├── src/           # Main logic, PID, Sensor Fusion
 │   ├── include/       # Headers, Config
 │   └── platformio.ini # Build configuration
-├── simulator/         # Three.js 3D Web Simulator
-│   ├── src/           # TypeScript source
+├── simulator/         # Three.js 3D Web Simulator + React Telemetry HUD
+│   ├── src/           # TypeScript/React source
 │   └── public/        # Assets, 3D models
-├── dashboard/         # React Telemetry Interface
 └── docs/              # Documentation and wiring diagrams
 ```
 
@@ -113,12 +113,13 @@ Tuning is critical for stable flight. Start with these steps:
 
 | Action | Control |
 | :--- | :--- |
-| **Throttle Up/Down** | `W` / `S` |
-| **Yaw Left/Right** | `A` / `D` |
-| **Pitch Forward/Back** | `Arrow Up` / `Arrow Down` |
-| **Roll Left/Right** | `Arrow Left` / `Arrow Right` |
-| **Camera Orbit** | `Mouse Drag` |
-| **Reset Simulation** | `R` |
+| **Throttle Up/Down** | `Space` / `Shift` |
+| **Pitch Forward/Back** | `W` / `S` |
+| **Roll Left/Right** | `A` / `D` |
+| **Yaw Left/Right** | `Q` / `E` |
+| **Toggle Camera** | `C` |
+| **Toggle Wind** | `R` |
+| **Hide Help** | `?` |
 
 ## 🗺️ Roadmap
 
@@ -129,46 +130,27 @@ Tuning is critical for stable flight. Start with these steps:
 - [ ] Return to home (RTH) failsafe
 - [ ] FPV camera feed streaming
 
-## 🤝 
----
+## 📸 Screenshots
 
-## Screenshots & Demo
+### Checkpoint racing HUD
+![DroneCtrl simulator HUD](assets/simulator-hud.png)
 
-### 3D Simulator
-```
-┌─────────────────────────────────────────────┐
-│  DroneCtrl - 3D Flight Simulator            │
-│  ┌───────────────────────────────────────┐  │
-│  │                                       │  │
-│  │        🚁  Quadcopter View            │  │
-│  │      Altitude: 15.2m                  │  │
-│  │      Roll: 2.3°  Pitch: -1.1°        │  │
-│  │      Yaw: 45.0°                       │  │
-│  │                                       │  │
-│  └───────────────────────────────────────┘  │
-│  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────────┐  │
-│  │Thrust│ │ Roll │ │Pitch │ │   Yaw    │  │
-│  │ 65%  │ │ 2.3° │ │-1.1° │ │  45.0°   │  │
-│  │ ████ │ │ ██   │ │ ██   │ │ ████     │  │
-│  └──────┘ └──────┘ └──────┘ └──────────┘  │
-└─────────────────────────────────────────────┘
-```
+### In flight
+![DroneCtrl simulator in flight](assets/simulator-flight.png)
 
-### Telemetry Dashboard
-- Real-time attitude gauges (roll, pitch, yaw)
-- Motor speed indicators (M1-M4)
-- PID tuning sliders with live response
-- Altitude and GPS position display
-- Battery voltage monitoring
+The HUD shows live altitude, speed, heading, battery, and per-motor RPM (FL/FR/RL/RR), plus a checkpoint counter for the built-in flight course.
 
 ### Live Demo
-> Run the simulator locally: `npm install && npm run dev`
-> Open `http://localhost:3000` in your browser
-> Use WASD keys to control the drone!
+No hosted demo yet — run it locally:
+```bash
+cd simulator
+npm install
+npm run dev
+```
+Then open the printed local URL and use the controls above to fly.
 
-
-Contributing
-Contributions are welcome! Please feel free to submit a Pull Request. Make sure to read our contributing guidelines before getting started.
+## 🤝 Contributing
+Contributions are welcome! Please feel free to submit a Pull Request. Make sure to read [CONTRIBUTING.md](CONTRIBUTING.md) before getting started.
 
 ## 📜 License
 This project is licensed under the MIT License - see the LICENSE file for details.
