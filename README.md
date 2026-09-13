@@ -166,16 +166,18 @@ mission mode on manual input.
 
 ## 📸 Screenshots
 
-### Checkpoint racing HUD
-![DroneCtrl simulator HUD](assets/simulator-hud.png)
+### Autopilot on final approach to a gate
+![DroneCtrl simulator flying its circuit on autopilot](assets/simulator-flight.png)
 
-### In flight
-![DroneCtrl simulator in flight](assets/simulator-flight.png)
+### Cinematic camera
+![DroneCtrl airframe banking mid-circuit](assets/simulator-hud.png)
 
-The HUD shows live altitude, speed, heading, battery, and per-motor RPM (FL/FR/RL/RR), plus a checkpoint counter for the built-in flight course.
+The HUD shows live altitude, ground and vertical speed, heading, battery and
+per-motor RPM, plus an artificial horizon. While the autopilot is engaged it
+also reports its current phase, target gate, range and altitude error.
 
 ### Live Demo
-**[drone-ctrl.vercel.app](https://drone-ctrl.vercel.app)** — runs in the browser,
+**[drone-ctrl.vercel.app](https://drone-ctrl.vercel.app)** runs in the browser,
 no install. It starts on autopilot, so you can watch it fly a lap before taking
 over.
 

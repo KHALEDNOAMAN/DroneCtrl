@@ -143,7 +143,7 @@ export const DroneModel: React.FC<Props> = ({ motorSpeedsRef }) => {
         <meshStandardMaterial color="#0b1220" roughness={0.8} />
       </mesh>
 
-      {/* FL, FR, RL, RR — the same order the motor mixer uses. */}
+      {/* FL, FR, RL, RR, the same order the motor mixer uses. */}
       <MotorPod position={[L, 0.02, -L]} spin={1} ledColor="#22d3ee" index={0} motorSpeedsRef={motorSpeedsRef} />
       <MotorPod position={[-L, 0.02, -L]} spin={-1} ledColor="#34d399" index={1} motorSpeedsRef={motorSpeedsRef} />
       <MotorPod position={[L, 0.02, L]} spin={-1} ledColor="#fbbf24" index={2} motorSpeedsRef={motorSpeedsRef} />
