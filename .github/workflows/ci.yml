@@ -23,7 +23,10 @@ jobs:
           python-version: '3.x'
       - name: Install PlatformIO
         run: python -m pip install --upgrade pip && pip install platformio
+      # platformio.ini lives in firmware/, not at the repo root. Without this,
+      # pio exits with NotPlatformIOProjectError before it builds anything.
       - name: Build firmware
+        working-directory: firmware
         run: pio run
 
   simulator:
