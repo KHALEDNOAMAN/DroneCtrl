@@ -1,6 +1,14 @@
 #pragma once
 #include <Arduino.h>
+// arduino-esp32 ships no Servo library, so <Servo.h> does not exist there and
+// the esp32 environment cannot compile against it. ESP32Servo provides the
+// same Servo class under its own header, with matching attach(pin, min, max)
+// and writeMicroseconds() signatures, so only the include has to differ.
+#if defined(ARDUINO_ARCH_ESP32)
+#include <ESP32Servo.h>
+#else
 #include <Servo.h>
+#endif
 #include "config.h"
 
 class MotorMixer {
