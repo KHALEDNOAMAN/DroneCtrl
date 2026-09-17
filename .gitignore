@@ -5,3 +5,9 @@ dist
 *.log
 .env
 .DS_Store
+
+# Host test and SIL build output
+firmware/test/build/
+firmware/sil/sil_flight
+firmware/sil/*.d
+firmware/sil/logs/

@@ -10,56 +10,52 @@
 #include <Servo.h>
 #endif
 #include "config.h"
+#include "mixer_math.h"
 
+/**
+ * The four ESC outputs.
+ *
+ * All the arithmetic lives in mixer_math.h, which has no Arduino dependency
+ * and is unit tested on the host. What is left here is the part that genuinely
+ * needs hardware: four Servo objects and the decision to write them at all.
+ */
 class MotorMixer {
 public:
-    MotorMixer() : armed_(false) {}
-
     void init() {
         motorFL.attach(PIN_MOTOR_FL, ESC_MIN, ESC_MAX);
         motorFR.attach(PIN_MOTOR_FR, ESC_MIN, ESC_MAX);
         motorBL.attach(PIN_MOTOR_BL, ESC_MIN, ESC_MAX);
         motorBR.attach(PIN_MOTOR_BR, ESC_MIN, ESC_MAX);
-        disarm();
+        stop();
     }
 
-    void arm() {
-        armed_ = true;
-    }
-
-    void disarm() {
-        armed_ = false;
+    /** Every motor to its minimum. The only path that reaches the ESCs when
+     *  the state machine says motors are not enabled. */
+    void stop() {
         writeMotors(ESC_MIN, ESC_MIN, ESC_MIN, ESC_MIN);
+        authority_limited_ = false;
     }
 
-    bool isArmed() const { return armed_; }
-
-    void setThrottle(float throttle_norm, float pitch_pid, float roll_pid, float yaw_pid) {
-        if (!armed_) {
-            disarm();
-            return;
-        }
-
-        // Map normalized throttle (0.0 to 1.0) to PWM (ESC_IDLE to ESC_MAX)
-        float base_pwm = ESC_IDLE + throttle_norm * (ESC_MAX - ESC_IDLE);
-
-        // Mix for X configuration
-        float fl = base_pwm + pitch_pid - roll_pid - yaw_pid;
-        float fr = base_pwm + pitch_pid + roll_pid + yaw_pid;
-        float bl = base_pwm - pitch_pid - roll_pid + yaw_pid;
-        float br = base_pwm - pitch_pid + roll_pid - yaw_pid;
-
-        writeMotors(
-            constrain((int)fl, ESC_MIN, ESC_MAX),
-            constrain((int)fr, ESC_MIN, ESC_MAX),
-            constrain((int)bl, ESC_MIN, ESC_MAX),
-            constrain((int)br, ESC_MIN, ESC_MAX)
-        );
+    /**
+     * @param throttle_norm 0..1, already decided by the flight state machine
+     *        rather than taken straight from the stick, so a failsafe descent
+     *        arrives here as an ordinary throttle value.
+     */
+    void setOutputs(float throttle_norm, float pitch_cmd, float roll_cmd, float yaw_cmd) {
+        const float base = ESC_IDLE + throttle_norm * (ESC_MAX - ESC_IDLE);
+        const auto out = mixer::mixX(base, pitch_cmd, roll_cmd, yaw_cmd, ESC_MIN, ESC_MAX);
+        authority_limited_ = out.authority_limited;
+        writeMotors((int)(out.fl + 0.5f), (int)(out.fr + 0.5f),
+                    (int)(out.bl + 0.5f), (int)(out.br + 0.5f));
     }
+
+    /** True when the last mix could not deliver the commanded torque. The
+     *  control loop uses it to hold the PID integrators. */
+    bool authorityLimited() const { return authority_limited_; }
 
 private:
     Servo motorFL, motorFR, motorBL, motorBR;
-    bool armed_;
+    bool authority_limited_ = false;
 
     void writeMotors(int fl, int fr, int bl, int br) {
         motorFL.writeMicroseconds(fl);

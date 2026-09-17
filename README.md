@@ -19,17 +19,24 @@ DroneCtrl is an open-source flight control system that bridges the gap between h
 
 DroneCtrl is a complete quadcopter flight control system designed for learning and experimentation. It combines real ESP32/Arduino firmware with an interactive 3D web simulator, allowing you to understand drone stabilization without needing physical hardware.
 
-The system implements industry-standard techniques: PID control loops for attitude stabilization, complementary filter for sensor fusion, and motor mixing algorithms for translating desired movements into individual motor speeds.
+The system implements industry-standard techniques: an extended Kalman filter for attitude estimation with online gyro bias correction, PID control loops for attitude stabilization, and a motor mixer that preserves control authority under saturation.
+
+The control, estimation and safety code carries no Arduino dependency, so the same source the flight controller runs is linked by the host unit tests and flown by the software-in-the-loop harness. That is what makes the claims below checkable rather than asserted: every number in [Verification](docs/verification.md) is produced by `make run`.
 
 ---
 
 ## ✨ Key Features
 
 - 🧠 **Real ESP32/Arduino firmware** for quadcopter control
-- ⚖️ **PID stabilization** (pitch, roll, yaw)
-- 📡 **MPU6050 IMU sensor fusion** (complementary filter)
+- 🎯 **4-state extended Kalman filter** for attitude, with online gyro bias estimation and adaptive accelerometer rejection
+- ⚖️ **PID stabilization** (pitch, roll, yaw) with gains derived from a plant model, not guessed
+- 🔀 **Saturation-aware motor mixer** that sacrifices throttle rather than attitude authority
+- 🛡️ **Latching failsafe state machine** with a documented land-versus-cut policy per fault
+- 🧪 **52 host unit tests** on the exact flight headers, no board and no dependencies
+- ✈️ **Software-in-the-loop harness** flying 9 scenarios with injected faults
+- 🔌 **CAN telemetry frame encoding** with transfer counting and gap detection
+- 📈 **Flight log output and analysis plots**
 - 🗺️ **GPS waypoint navigation**
-- 🛡️ **Failsafe modes** (signal loss, low battery, geofence)
 - 🤖 **Waypoint autopilot** with cascaded guidance, velocity and attitude loops
 - 🎮 **Interactive 3D web simulator** (Three.js)
 - 📊 **Telemetry dashboard** with real-time gauges and an artificial horizon
@@ -64,22 +71,80 @@ the tuning panel affects both.
 | :--- | :--- |
 | **Firmware** | C++, Arduino, ESP32, PlatformIO |
 | **Sensors** | MPU6050 (IMU), BMP280 (Barometer), GPS |
-| **Control** | PID loops, Complementary filter, Motor mixing |
+| **Estimation** | Extended Kalman filter, gyro bias estimation, innovation monitoring |
+| **Control** | Cascaded PID, saturation-aware motor mixing, failsafe state machine |
+| **Verification** | Host unit tests, software-in-the-loop, fault injection, GitHub Actions |
 | **Simulator & HUD** | TypeScript, React, Three.js (@react-three/fiber, @react-three/drei), WebGL |
 
 ## ⚙️ How It Works
 
 ### Flight Controller Loop
-The core firmware runs a deterministic control loop at 400Hz. This ensures minimal latency between reading sensor data and applying corrective forces to the motors.
+A fixed 250 Hz loop, in four steps: read the IMU and step the estimator, feed the estimate and the receiver into the flight state machine, run the attitude PIDs if and only if that machine allows it, then mix to four ESC outputs. `main.cpp` is wiring and nothing else, because logic that lands there is logic that cannot be tested without a board and a flight.
 
-### Sensor Fusion
-Raw IMU data is notoriously noisy. We use a complementary filter to combine the fast response of the gyroscope with the stable, long-term accuracy of the accelerometer, yielding precise attitude estimation.
+### State Estimation
+A four-state extended Kalman filter estimates roll, pitch and the gyro's two horizontal bias terms. The accelerometer is used as an observation of the gravity vector rather than pre-converted into angles, and `R` is inflated in proportion to how far the measured magnitude departs from 1 g, so a manoeuvring airframe de-weights the update instead of reading its own acceleration as tilt.
+
+The interesting comparison is not the static one. With a clean accelerometer, the complementary filter this replaced settles only about 0.4 degrees off under a 2 deg/s gyro bias, and the tests say so rather than overstating the case. The difference appears when the accelerometer stops being usable: over ten seconds of gyro-only propagation the old filter walks off by about 20 degrees, while the EKF, carrying bias as a state, stays inside 3.
+
+![Gyro bias estimation and attitude error](assets/sil-estimator.png)
+
+Full derivation, tuning and the two sign errors that used to cancel each other: [docs/state_estimation.md](docs/state_estimation.md).
 
 ### PID Stabilization
-Three independent PID (Proportional-Integral-Derivative) controllers calculate the required correction for Pitch, Roll, and Yaw based on the difference between the desired setpoint and the current estimated attitude.
+Three PIDs, with derivative on measurement, a derivative low-pass expressed as a time constant so its cutoff does not move with the loop rate, and an integrator that is held whenever the mixer reports it could not deliver last step's torque.
+
+The gains are derived from the plant rather than guessed. For the modelled airframe one microsecond of roll command produces about 13.3 deg/s² of angular acceleration, which sets `omega_n^2 = 13.3 Kp` and `2 zeta omega_n = 13.3 Kd + 1.8`; solving for 6 rad/s and a damping ratio of 0.75 gives the values in `config.h`.
+
+![Roll step response](assets/sil-attitude.png)
 
 ### Motor Mixing
-The quadcopter uses an X-configuration. The motor mixer translates the aggregate Pitch, Roll, Yaw, and Throttle commands into specific PWM signals for each of the four Electronic Speed Controllers (ESCs).
+X configuration. The naive mix clamps each motor independently, and that clamp is where attitude authority quietly goes missing: once a motor hits the ceiling the extra command is discarded, the four outputs no longer differ by the torque the controller asked for, and the airframe stops responding in roll exactly at the high throttle where it is least forgiving.
+
+This mixer treats the differential torques as the thing worth protecting and the common throttle as the thing that can give way. It computes the widest throttle window that keeps every motor in range, moves the requested throttle into it, and only scales the torques themselves if they cannot fit at any throttle, equally on all axes so the commanded direction survives even when its magnitude cannot. Sacrificing altitude to hold attitude is nearly always right, because a quadcopter that has lost attitude control cannot recover altitude either.
+
+### Failsafes
+A latching state machine with an explicit policy per fault, rather than an implicit one in the order of a few if statements:
+
+| Fault | Response | Why |
+| :--- | :--- | :--- |
+| Signal loss | controlled descent | still controllable and still knows its attitude |
+| Low battery | controlled descent | known in advance; the remaining charge is for this |
+| Excessive tilt | cut power | past this angle the controller cannot recover it |
+| Estimator diverged | cut power | attitude unknown, so every command is a guess |
+
+Failsafes latch. A receiver that recovers mid-descent does not silently hand control back, because that is how an airframe ends up climbing again while someone walks towards it.
+
+![Failsafe descent after receiver loss](assets/sil-failsafe.png)
+
+## 🧪 Verification
+
+```bash
+cd firmware/test && make run     # 52 unit tests, ~2 s, no dependencies
+cd firmware/sil  && make run     # 9 SIL scenarios with fault injection, ~3 s
+cd firmware      && pio run      # both target builds
+```
+
+The control, estimation and safety headers carry no Arduino dependency, so the tests and the simulator link the same source the flight controller runs. A control law verified in a separate implementation has only been verified as a separate implementation.
+
+**The harness rejected the gains this project shipped with.** Mean attitude looked fine, which is what makes the failure mode easy to miss; the actuators told the real story.
+
+![ESC commands before and after retuning](assets/sil-gain-fix.png)
+
+| | Before | After |
+| :--- | :--- | :--- |
+| Hover ESC range | 1000 to 2000 us | 1398 to 1419 us |
+| Steady flight on an ESC rail | continuous | 0 of 2796 samples |
+| Roll RMS in hover | unstable | 0.11 deg |
+| Roll step, 15 deg commanded | not tracked | 15.0 deg, 15% overshoot, 0.38 s to 90% |
+| One motor at 70% thrust | past 45 deg in 6 s | peak 0.7 deg |
+
+The old gains are kept as a scenario that **passes by failing**, so if they are ever reintroduced and the harness stops objecting, CI turns red.
+
+What the SIL model does not contain: blade flapping, ground effect, propeller inflow, battery sag under load, ESC nonlinearity, structural flex. It is good enough to catch a sign error, an unstable gain, a windup bug or a failsafe that does not fire. It is not good enough to predict flight time, and the gains above are tuned for the simulated airframe, not a substitute for bench tuning on real hardware.
+
+Hardware in the loop is not built yet. The seam for it is in place, and saying what is missing seems more useful than implying it is there.
+
+Details, including the defect the unit tests found on their first run: [docs/verification.md](docs/verification.md).
 
 ## 🚀 Getting Started
 
@@ -117,23 +182,28 @@ npm run check
 
 ```text
 DroneCtrl/
-├── firmware/          # ESP32 C++ Flight Controller Code
-│   ├── src/           # Main logic, PID, Sensor Fusion
-│   ├── include/       # Headers, Config
-│   └── platformio.ini # Build configuration
-├── simulator/         # Three.js 3D Web Simulator + React Telemetry HUD
+├── firmware/          # ESP32 and Arduino C++ flight controller
+│   ├── include/       # Estimator, control law, mixer, state machine, drivers
+│   ├── src/           # main.cpp, which is wiring and nothing else
+│   ├── test/          # Host unit tests, plain g++, no dependencies
+│   ├── sil/           # Software-in-the-loop harness and flight logs
+│   └── platformio.ini # Build configuration, plus a host environment
+├── simulator/         # Three.js 3D web simulator + React telemetry HUD
 │   ├── src/engine/    # Physics, PID controller, autopilot (no React, no renderer)
 │   ├── src/components/# Scene and HUD
 │   └── tools/         # Headless flight check
-└── docs/              # Documentation and wiring diagrams
+├── tools/             # Flight log plotting
+└── docs/              # Architecture, state estimation, verification, wiring
 ```
 
 ## 🎛️ PID Tuning Guide
 
-Tuning is critical for stable flight. Start with these steps:
-1. **P (Proportional)**: Increase until the drone oscillates rapidly, then reduce by 20-30%. This provides the immediate corrective force.
-2. **D (Derivative)**: Increase to dampen the P-term oscillations and soften the response to rapid changes. Too much D causes jitter.
-3. **I (Integral)**: Increase slowly to hold attitude against external forces (like wind or off-center CG) over time.
+The gains in `config.h` are derived from the airframe model in `firmware/sil`, not tuned by hand. If your airframe differs, redo the derivation in [docs/verification.md](docs/verification.md) with your own mass, arm length and motor thrust, then check the result with `cd firmware/sil && make run` before flying it.
+
+If you would rather tune empirically:
+1. **P (Proportional)**: Increase until the drone oscillates rapidly, then reduce by 20 to 30%. This provides the immediate corrective force.
+2. **D (Derivative)**: Increase to dampen the P-term oscillations and soften the response to rapid changes. Too much D causes jitter, and past a point it stops being jitter and becomes the actuators chattering between their stops while mean attitude still looks acceptable. Watch the motor outputs, not just the attitude.
+3. **I (Integral)**: Increase slowly to hold attitude against external forces such as wind or an off-centre CG.
 
 ## 🕹️ Simulator Controls
 
@@ -160,6 +230,10 @@ mission mode on manual input.
 - [x] 3D simulator
 - [x] GPS waypoints
 - [x] Waypoint autopilot in the simulator
+- [x] Extended Kalman filter with gyro bias estimation
+- [x] Host unit tests and software-in-the-loop with fault injection
+- [ ] Hardware in the loop: the same control loop on the board, sensors injected over serial
+- [ ] Magnetometer, which is what would make a yaw state observable
 - [ ] Optical flow integration
 - [ ] Return to home (RTH) failsafe
 - [ ] FPV camera feed streaming
