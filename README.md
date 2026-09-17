@@ -73,7 +73,8 @@ the tuning panel affects both.
 | **Sensors** | MPU6050 (IMU), BMP280 (Barometer), GPS |
 | **Estimation** | Extended Kalman filter, gyro bias estimation, innovation monitoring |
 | **Control** | Cascaded PID, saturation-aware motor mixing, failsafe state machine |
-| **Verification** | Host unit tests, software-in-the-loop, fault injection, GitHub Actions |
+| **Modelling** | MATLAB and Octave, plant identification, pole placement |
+| **Verification** | Host unit tests, software-in-the-loop, MIL/SIL equivalence, fault injection, GitHub Actions |
 | **Simulator & HUD** | TypeScript, React, Three.js (@react-three/fiber, @react-three/drei), WebGL |
 
 ## ⚙️ How It Works
@@ -119,9 +120,10 @@ Failsafes latch. A receiver that recovers mid-descent does not silently hand con
 ## 🧪 Verification
 
 ```bash
-cd firmware/test && make run     # 52 unit tests, ~2 s, no dependencies
-cd firmware/sil  && make run     # 9 SIL scenarios with fault injection, ~3 s
-cd firmware      && pio run      # both target builds
+cd firmware/test && make run              # 52 unit tests, ~2 s, no dependencies
+cd firmware/sil  && make run              # 9 SIL scenarios with fault injection, ~3 s
+cd matlab && octave-cli verify_mil_sil.m  # MATLAB model against the C++ flight code
+cd firmware      && pio run               # both target builds
 ```
 
 The control, estimation and safety headers carry no Arduino dependency, so the tests and the simulator link the same source the flight controller runs. A control law verified in a separate implementation has only been verified as a separate implementation.
@@ -144,7 +146,15 @@ What the SIL model does not contain: blade flapping, ground effect, propeller in
 
 Hardware in the loop is not built yet. The seam for it is in place, and saying what is missing seems more useful than implying it is there.
 
-Details, including the defect the unit tests found on their first run: [docs/verification.md](docs/verification.md).
+### Model in the loop
+
+[`matlab/`](matlab/) holds a second implementation of the same plant, estimator, controller and mixer, in plain `.m` files that run in Octave so CI needs no MATLAB licence. The firmware hand-rolls its matrix algebra into fixed-size arrays because it targets an ATmega328; this version is the readable one, where the EKF is four lines and a pole moves in one edit.
+
+`tune_gains.m` makes the gain derivation executable: it identifies the plant numerically from the model, cross-checks that against the closed form, places the closed-loop poles, and prints the values that are in `config.h`. `verify_mil_sil.m` then checks the two implementations against each other, driving both from the same pseudo-random generator so they see identical noise and any divergence is a difference in the models rather than in the dice. They agree to 0.03 degrees RMS.
+
+That check also found a real error on its first run, and a single scenario would have missed it. Details in [matlab/README.md](matlab/README.md).
+
+Details of the rest, including the defect the unit tests found on their first run: [docs/verification.md](docs/verification.md).
 
 ## 🚀 Getting Started
 
@@ -192,6 +202,7 @@ DroneCtrl/
 │   ├── src/engine/    # Physics, PID controller, autopilot (no React, no renderer)
 │   ├── src/components/# Scene and HUD
 │   └── tools/         # Headless flight check
+├── matlab/            # MATLAB/Octave model, gain derivation, MIL vs SIL check
 ├── tools/             # Flight log plotting
 └── docs/              # Architecture, state estimation, verification, wiring
 ```
@@ -232,6 +243,7 @@ mission mode on manual input.
 - [x] Waypoint autopilot in the simulator
 - [x] Extended Kalman filter with gyro bias estimation
 - [x] Host unit tests and software-in-the-loop with fault injection
+- [x] MATLAB model with executable gain derivation and a MIL/SIL equivalence check
 - [ ] Hardware in the loop: the same control loop on the board, sensors injected over serial
 - [ ] Magnetometer, which is what would make a yaw state observable
 - [ ] Optical flow integration

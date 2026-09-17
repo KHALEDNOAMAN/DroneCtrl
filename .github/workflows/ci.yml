@@ -37,6 +37,28 @@ jobs:
           path: firmware/sil/logs/*.csv
           if-no-files-found: warn
 
+  # Model in the loop, and the check that it still agrees with the flight code.
+  # Runs the C++ harness itself rather than pulling the other job's artifact,
+  # so the job is self-contained and the two sides are built from the same
+  # checkout. Octave rather than MATLAB, so no licence is needed.
+  mil:
+    name: MATLAB model and MIL/SIL equivalence
+    runs-on: ubuntu-latest
+    needs: host-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Octave
+        run: sudo apt-get update -qq && sudo apt-get install -y -q --no-install-recommends octave
+      - name: Produce the SIL logs
+        working-directory: firmware/sil
+        run: make run
+      - name: Derive the gains from the airframe
+        working-directory: matlab
+        run: octave-cli tune_gains.m
+      - name: MIL and SIL equivalence
+        working-directory: matlab
+        run: octave-cli verify_mil_sil.m
+
   firmware:
     name: Firmware (PlatformIO)
     runs-on: ubuntu-latest
