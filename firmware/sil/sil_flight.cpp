@@ -50,6 +50,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -547,6 +548,235 @@ Result run(const Scenario& sc) {
     return res;
 }
 
+/**
+ * Monte Carlo robustness campaign.
+ *
+ * The gains in config.h are derived for one airframe: 1 kg, 0.15 m arm, 6 N
+ * motors. Every document in this repository says so, and says they are a
+ * starting point rather than a substitute for bench tuning. That is honest as
+ * far as it goes, but it leaves the obvious question unanswered: how far can
+ * the real airframe be from the modelled one before those gains stop working?
+ *
+ * This answers it by holding the gains fixed and randomising the plant.
+ * Mass, inertia, motor thrust and lag, arm length and the two damping terms
+ * are each drawn independently, along with gyro bias and sensor noise, and the
+ * same hover-with-disturbance flight is run for each draw. A trial passes on
+ * the same criteria the named scenarios use: still armed at the end, tilt
+ * under control, estimator converged, and the actuators not sitting on a rail.
+ *
+ * The result is a number that can be quoted, and more usefully a boundary:
+ * the CSV records every draw with its outcome, so the parameter that actually
+ * decides failure can be read off rather than guessed at.
+ *
+ * Deterministic: trial N always draws the same airframe, so a failure is
+ * reproducible by running that trial alone.
+ */
+struct Trial {
+    int index = 0;
+    Airframe cfg;
+    float gyro_bias_dps = 0.0f;
+    float gyro_noise = 0.0f;
+    float accel_noise = 0.0f;
+
+    bool passed = false;
+    float worst_tilt = 0.0f;
+    float worst_est_err = 0.0f;
+    float railed_fraction = 0.0f;
+    const char* verdict = "pass";
+};
+
+/** Uniform in [lo, hi]. */
+static float draw(Rng& rng, float lo, float hi) {
+    return lo + (rng.uniform() * 0.5f + 0.5f) * (hi - lo);
+}
+
+Trial runTrial(int index) {
+    Trial t;
+    t.index = index;
+
+    // One generator per trial, seeded from the index, so trial 37 is the same
+    // airframe on every machine and every run.
+    Rng rng(0x9E3779B9u + (uint32_t)index * 2654435761u);
+
+    const Airframe nominal;
+    t.cfg.mass = nominal.mass * draw(rng, 0.4f, 3.0f);
+    t.cfg.arm = nominal.arm * draw(rng, 0.5f, 2.0f);
+    // Inertia is drawn independently of mass rather than scaled with it. A
+    // real airframe's mass distribution is not a fixed function of its weight,
+    // and tying the two would hide the case this is meant to find: a heavy
+    // battery close to the centre, or a light frame with long arms.
+    t.cfg.inertia_xx = nominal.inertia_xx * draw(rng, 0.25f, 5.0f);
+    t.cfg.inertia_yy = t.cfg.inertia_xx;
+    t.cfg.inertia_zz = nominal.inertia_zz * draw(rng, 0.25f, 5.0f);
+    t.cfg.max_thrust = nominal.max_thrust * draw(rng, 0.5f, 2.5f);
+    t.cfg.motor_tau = draw(rng, 0.01f, 0.15f);
+    t.cfg.rot_damping = nominal.rot_damping * draw(rng, 0.5f, 2.0f);
+    t.cfg.yaw_torque_k = nominal.yaw_torque_k * draw(rng, 0.6f, 1.6f);
+    t.cfg.lin_drag = nominal.lin_drag * draw(rng, 0.5f, 1.8f);
+
+    t.gyro_bias_dps = draw(rng, -4.0f, 4.0f);
+    t.gyro_noise = draw(rng, 0.005f, 0.035f);
+    t.accel_noise = draw(rng, 0.01f, 0.07f);
+
+    Plant plant;
+    plant.cfg = t.cfg;
+    ImuModel imu;
+    imu.bias_p = t.gyro_bias_dps * kRad;
+    imu.bias_q = -0.5f * t.gyro_bias_dps * kRad;
+    imu.gyro_noise = t.gyro_noise;
+    imu.accel_noise = t.accel_noise;
+
+    Controller ctrl;
+    ctrl.ekf.initializeFromAccel(0.0f, 0.0f, 1.0f);
+
+    Sticks sticks;
+    uint32_t now_ms = 0;
+    float pwm[4] = {kEscMin, kEscMin, kEscMin, kEscMin};
+
+    // Hover throttle has to follow the drawn airframe, not the nominal one, or
+    // a heavy draw would fail for lack of throttle rather than for control.
+    const float hover_thrust = t.cfg.mass * kG / 4.0f;
+    float hover_u = hover_thrust / t.cfg.max_thrust;
+    if (hover_u > 0.95f) hover_u = 0.95f;
+    const float hover_pwm = kEscMin + hover_u * (kEscMax - kEscMin);
+    const float hover_stick = (hover_pwm - kEscIdle) / (kEscMax - kEscIdle);
+
+    bool ever_armed = false;
+    long samples = 0, railed = 0;
+
+    const int steps = (int)(20.0f / kDt);
+    for (int i = 0; i < steps; ++i) {
+        const float time = i * kDt;
+
+        if (time < 2.5f) {
+            sticks.throttle = 0.0f;
+            sticks.yaw = 1.0f;
+        } else {
+            sticks.yaw = 0.0f;
+            sticks.throttle = hover_stick;
+        }
+
+        float gx, gy, gz, ax, ay, az;
+        imu.sample(plant, rng, gx, gy, gz, ax, ay, az);
+        ctrl.step(gx, gy, gz, ax, ay, az, sticks, 12.4f, (now_ms += 4), pwm);
+
+        // A constant roll disturbance once airborne, scaled to the airframe so
+        // every draw is asked to reject a comparable upset rather than the
+        // heavy ones getting an easier ride.
+        const float wind = (plant.z > 0.5f && time > 6.0f)
+                               ? 0.06f * (t.cfg.inertia_xx / nominal.inertia_xx)
+                               : 0.0f;
+        plant.step(pwm, wind, kDt);
+
+        if (ctrl.fsm.state() == FlightState::ARMED) ever_armed = true;
+
+        if (ever_armed && time > 5.0f) {
+            const float tilt = fabsf(plant.roll * kDeg);
+            if (tilt > t.worst_tilt) t.worst_tilt = tilt;
+            const float err = fabsf(ctrl.ekf.getRollDeg() - plant.roll * kDeg);
+            if (err > t.worst_est_err) t.worst_est_err = err;
+
+            if (ctrl.fsm.state() == FlightState::ARMED) {
+                for (int m = 0; m < 4; ++m) {
+                    ++samples;
+                    if (pwm[m] <= kEscMin + 1.0f || pwm[m] >= kEscMax - 1.0f) ++railed;
+                }
+            }
+        }
+    }
+
+    t.railed_fraction = samples > 0 ? (float)railed / (float)samples : 1.0f;
+
+    if (!ever_armed) t.verdict = "never armed";
+    else if (ctrl.fsm.state() != FlightState::ARMED) t.verdict = toString(ctrl.fsm.fault());
+    else if (t.worst_tilt >= 35.0f) t.verdict = "tilt";
+    else if (t.worst_est_err >= 8.0f) t.verdict = "estimator";
+    else if (t.railed_fraction >= 0.02f) t.verdict = "actuator chatter";
+    else t.passed = true;
+
+    return t;
+}
+
+int runMonteCarlo(int trials, const std::string& dir) {
+    std::printf("Monte Carlo robustness, %d trials\n", trials);
+    std::printf("  gains held fixed, airframe randomised around the nominal\n\n");
+
+    const std::string path = dir + "/monte_carlo.csv";
+    FILE* f = fopen(path.c_str(), "w");
+    if (f) {
+        fprintf(f, "trial,mass_ratio,inertia_ratio,thrust_ratio,arm_ratio,motor_tau,"
+                   "rot_damping_ratio,lin_drag_ratio,gyro_bias_dps,gyro_noise,accel_noise,"
+                   "plant_gain_ratio,worst_tilt_deg,worst_est_err_deg,railed_fraction,passed,verdict\n");
+    }
+
+    const Airframe nominal;
+    int passed = 0;
+    std::vector<float> gain_ratio((size_t)trials, 0.0f);
+    std::vector<bool> outcome((size_t)trials, false);
+
+    for (int i = 0; i < trials; ++i) {
+        const Trial t = runTrial(i);
+        if (t.passed) ++passed;
+        gain_ratio[(size_t)i] = (t.cfg.arm / nominal.arm) *
+                                (t.cfg.max_thrust / nominal.max_thrust) /
+                                (t.cfg.inertia_xx / nominal.inertia_xx);
+        outcome[(size_t)i] = t.passed;
+        if (f) {
+            fprintf(f, "%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.4f,%.4f,"
+                       "%.4f,%.3f,%.3f,%.5f,%d,%s\n",
+                    t.index,
+                    t.cfg.mass / nominal.mass,
+                    t.cfg.inertia_xx / nominal.inertia_xx,
+                    t.cfg.max_thrust / nominal.max_thrust,
+                    t.cfg.arm / nominal.arm,
+                    t.cfg.motor_tau,
+                    t.cfg.rot_damping / nominal.rot_damping,
+                    t.cfg.lin_drag / nominal.lin_drag,
+                    t.gyro_bias_dps, t.gyro_noise, t.accel_noise,
+                    gain_ratio[(size_t)i],
+                    t.worst_tilt, t.worst_est_err, t.railed_fraction,
+                    t.passed ? 1 : 0, t.verdict);
+        }
+    }
+    if (f) fclose(f);
+
+    const float rate = 100.0f * (float)passed / (float)trials;
+    std::printf("  %d of %d passed (%.1f%%)\n\n", passed, trials, rate);
+
+    // A bare pass rate says whether the gains survive, not where they stop.
+    // The five randomised airframe parameters collapse into one number that
+    // the controller actually feels: the plant gain, which is proportional to
+    // arm * thrust / inertia. Reporting failures against that, and against
+    // motor lag, turns the campaign from a percentage into a boundary.
+    std::printf("  failures by plant gain (arm x thrust / inertia, relative to design)\n");
+    const float bands[4][2] = {{0.0f, 0.25f}, {0.25f, 0.5f}, {0.5f, 1.0f}, {1.0f, 1e9f}};
+    const char* labels[4] = {"below 0.25", "0.25 to 0.5", "0.5 to 1.0", "above 1.0"};
+    for (int b = 0; b < 4; ++b) {
+        int n = 0, bad = 0;
+        for (int i = 0; i < trials; ++i) {
+            const float k = gain_ratio[i];
+            if (k < bands[b][0] || k >= bands[b][1]) continue;
+            ++n;
+            if (!outcome[i]) ++bad;
+        }
+        if (n == 0) continue;
+        std::printf("    %-12s %4d trials, %3d failed (%.1f%%)\n",
+                    labels[b], n, bad, 100.0f * (float)bad / (float)n);
+    }
+    std::printf("\n  per-trial detail written to %s\n\n", path.c_str());
+
+    // A campaign is only meaningful against a stated expectation. Below this
+    // the gains are not tolerating realistic airframe variation and the
+    // derivation, not the airframe, is what needs revisiting.
+    const float kRequired = 90.0f;
+    if (rate < kRequired) {
+        std::printf("  FAIL: below the %.0f%% floor for this parameter spread\n", kRequired);
+        return 1;
+    }
+    std::printf("  pass: at or above the %.0f%% floor\n", kRequired);
+    return 0;
+}
+
 bool writeCsv(const Result& r, const std::string& dir) {
     const std::string path = dir + "/" + r.name + ".csv";
     FILE* f = fopen(path.c_str(), "w");
@@ -570,9 +800,15 @@ bool writeCsv(const Result& r, const std::string& dir) {
 
 int main(int argc, char** argv) {
     std::string out_dir = "logs";
+    int monte_carlo = 0;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--out") == 0 && i + 1 < argc) out_dir = argv[++i];
+        else if (std::strcmp(argv[i], "--monte-carlo") == 0 && i + 1 < argc) {
+            monte_carlo = std::atoi(argv[++i]);
+        }
     }
+
+    if (monte_carlo > 0) return runMonteCarlo(monte_carlo, out_dir);
 
     std::vector<Scenario> scenarios;
     {

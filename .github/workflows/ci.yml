@@ -29,6 +29,13 @@ jobs:
       - name: Build and fly
         working-directory: firmware/sil
         run: make run
+      # Holds the gains fixed and randomises mass, inertia, thrust, arm length
+      # and motor lag over a deliberately wide spread. Fails if the pass rate
+      # drops below 90 percent, so a change that narrows the envelope the gains
+      # tolerate is caught even when every named scenario still passes.
+      - name: Monte Carlo robustness
+        working-directory: firmware/sil
+        run: make monte-carlo
       - name: Upload flight logs
         uses: actions/upload-artifact@v4
         if: always()
