@@ -4,10 +4,10 @@
 
 **Quadcopter Flight Controller with PID Stabilization, Sensor Fusion & Interactive 3D Simulator.**
 
+[![CI](https://github.com/KHALEDNOAMAN/DroneCtrl/actions/workflows/ci.yml/badge.svg)](https://github.com/KHALEDNOAMAN/DroneCtrl/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](#)
-[![Language](https://img.shields.io/badge/language-C++_|_TypeScript-blue.svg)](#)
-[![Simulator](https://img.shields.io/badge/simulator-Three.js-orange.svg)](#)
+[![Language](https://img.shields.io/badge/language-C++_|_MATLAB_|_TypeScript-blue.svg)](#)
+[![Live demo](https://img.shields.io/badge/demo-drone--ctrl.vercel.app-orange.svg)](https://drone-ctrl.vercel.app)
 
 </div>
 
@@ -33,7 +33,7 @@ The control, estimation and safety code carries no Arduino dependency, so the sa
 - 🔀 **Saturation-aware motor mixer** that sacrifices throttle rather than attitude authority
 - 🛡️ **Latching failsafe state machine** with a documented land-versus-cut policy per fault
 - 🧪 **53 host unit tests** on the exact flight headers, no board and no dependencies
-- ✈️ **Software-in-the-loop harness** flying 9 scenarios with injected faults
+- ✈️ **Software-in-the-loop harness** flying 9 scenarios with injected faults, plus an 800-run Monte Carlo campaign
 - 🔌 **CAN telemetry frame encoding** with transfer counting and gap detection
 - 📈 **Flight log output and analysis plots**
 - 🗺️ **GPS waypoint navigation**
@@ -44,6 +44,8 @@ The control, estimation and safety code carries no Arduino dependency, so the sa
 - ⏱️ **Fixed-timestep physics**, so flight behaviour does not change with frame rate
 
 ## 🏗️ Architecture
+
+Block diagrams of the control loop and of how the three test harnesses attach to the same source: [docs/architecture.md](docs/architecture.md).
 
 ```text
 Sensors (IMU/GPS/Baro) → Sensor Fusion → PID Controller → Motor Mixer → ESC → Motors
@@ -122,6 +124,7 @@ Failsafes latch. A receiver that recovers mid-descent does not silently hand con
 ```bash
 cd firmware/test && make run              # 53 unit tests, ~2 s, no dependencies
 cd firmware/sil  && make run              # 9 SIL scenarios with fault injection, ~3 s
+cd firmware/sil  && make monte-carlo     # 800 randomised airframes against fixed gains
 cd matlab && octave-cli verify_mil_sil.m  # MATLAB model against the C++ flight code
 cd firmware      && pio run               # both target builds
 ```
@@ -143,6 +146,27 @@ The control, estimation and safety headers carry no Arduino dependency, so the t
 The old gains are kept as a scenario that **passes by failing**, so if they are ever reintroduced and the harness stops objecting, CI turns red.
 
 What the SIL model does not contain: blade flapping, ground effect, propeller inflow, battery sag under load, ESC nonlinearity, structural flex. It is good enough to catch a sign error, an unstable gain, a windup bug or a failsafe that does not fire. It is not good enough to predict flight time, and the gains above are tuned for the simulated airframe, not a substitute for bench tuning on real hardware.
+
+### How far do those gains travel
+
+Every document here says the gains are derived for one airframe, 1 kg with a 0.15 m arm and 6 N motors, and are a starting point rather than a substitute for bench tuning. That is honest as far as it goes, and it leaves the obvious question unanswered. `make monte-carlo` answers it: hold the gains fixed, randomise the airframe, and see what survives.
+
+Over 800 draws spanning mass 0.4x to 3x, rotational inertia 0.25x to 5x, motor thrust 0.5x to 2.5x, arm length 0.5x to 2x and motor lag 10 to 150 ms, **97 percent held**.
+
+![Monte Carlo robustness](assets/sil-monte-carlo.png)
+
+The failures are not scattered. Five randomised parameters collapse into the one number the controller actually feels, the plant gain, proportional to `arm x thrust / inertia`:
+
+| Plant gain vs design | Trials | Lost control |
+| :--- | ---: | ---: |
+| below 0.25 | 85 | 10.6% |
+| 0.25 to 0.5 | 193 | 4.7% |
+| 0.5 to 1.0 | 244 | 0% |
+| above 1.0 | 278 | 2.2% |
+
+Below half the design gain, which in practice means an airframe with three to five times the modelled inertia, the loop's bandwidth has dropped by the same factor and it can no longer reject the disturbance in time. Every one of those failures is an excessive-tilt cut, which is the symptom you would predict. The smaller cluster above 1.0 is the opposite problem: high gain against a slow actuator, all of them at motor lag beyond 80 ms, where the neglected actuator pole has moved close to the crossover.
+
+CI fails the campaign below 90 percent, so a change that narrows the envelope is caught even when every named scenario still passes.
 
 Hardware in the loop is not built yet. The seam for it is in place, and saying what is missing seems more useful than implying it is there.
 

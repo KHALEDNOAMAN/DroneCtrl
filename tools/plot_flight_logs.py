@@ -88,7 +88,13 @@ def load(log_dir, name):
             cols[field] = []
         for row in reader:
             for field, value in row.items():
-                cols[field].append(float(value))
+                # Most columns are numeric, but the Monte Carlo log carries a
+                # verdict string. Coercing everything would throw on it, and
+                # dropping the column would lose the reason a trial failed.
+                try:
+                    cols[field].append(float(value))
+                except ValueError:
+                    cols[field].append(value)
     return cols
 
 
@@ -246,6 +252,45 @@ def fig_gain_fix(log_dir, out_dir):
     save(fig, out_dir, "sil-gain-fix.png")
 
 
+def fig_monte_carlo(log_dir, out_dir):
+    """Where the fixed gains stop working, and why."""
+    log = load(log_dir, "monte_carlo")
+
+    fig, ax = plt.subplots(figsize=(8.4, 4.2))
+
+    k = log["plant_gain_ratio"]
+    tau = log["motor_tau"]
+    ok = [i for i, p in enumerate(log["passed"]) if p > 0.5]
+    bad = [i for i, p in enumerate(log["passed"]) if p <= 0.5]
+
+    # Pass and fail are a status, not two series, so they take the reserved
+    # status colours rather than a categorical pair, and the failures get a
+    # heavier mark because they are the point of the chart.
+    ax.scatter([k[i] for i in ok], [tau[i] * 1000 for i in ok],
+               s=14, color=STATUS["ARMED"], alpha=0.55, lw=0, label=f"held ({len(ok)})")
+    ax.scatter([k[i] for i in bad], [tau[i] * 1000 for i in bad],
+               s=46, color=STATUS["FAILSAFE_CUT"], lw=0.8, edgecolor=SURFACE,
+               label=f"lost control ({len(bad)})", zorder=3)
+
+    ax.axvline(0.5, color=INK_MUTED, lw=1.0, ls=":", zorder=1)
+    ax.annotate(
+        "half the design\nplant gain",
+        xy=(0.5, 8), xytext=(0.17, 8),
+        color=INK_MUTED, fontsize=8.5, ha="center", va="bottom",
+        arrowprops=dict(arrowstyle="->", color=INK_MUTED, lw=0.9),
+    )
+    ax.set_ylim(0, 165)
+
+    ax.set_xscale("log")
+    ax.set_xlabel("plant gain relative to design  (arm x thrust / inertia)")
+    ax.set_ylabel("motor lag (ms)")
+    ax.set_title("Fixed gains against a randomised airframe: where they stop working")
+    ax.legend(loc="upper center", ncol=2, bbox_to_anchor=(0.5, 1.0))
+    tidy(ax)
+    fig.tight_layout()
+    save(fig, out_dir, "sil-monte-carlo.png")
+
+
 def save(fig, out_dir, name):
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, name)
@@ -266,6 +311,7 @@ def main():
     fig_estimator(args.logs, args.out)
     fig_failsafe(args.logs, args.out)
     fig_gain_fix(args.logs, args.out)
+    fig_monte_carlo(args.logs, args.out)
 
 
 if __name__ == "__main__":
