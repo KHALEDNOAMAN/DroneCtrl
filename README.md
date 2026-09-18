@@ -32,7 +32,7 @@ The control, estimation and safety code carries no Arduino dependency, so the sa
 - ⚖️ **PID stabilization** (pitch, roll, yaw) with gains derived from a plant model, not guessed
 - 🔀 **Saturation-aware motor mixer** that sacrifices throttle rather than attitude authority
 - 🛡️ **Latching failsafe state machine** with a documented land-versus-cut policy per fault
-- 🧪 **52 host unit tests** on the exact flight headers, no board and no dependencies
+- 🧪 **53 host unit tests** on the exact flight headers, no board and no dependencies
 - ✈️ **Software-in-the-loop harness** flying 9 scenarios with injected faults
 - 🔌 **CAN telemetry frame encoding** with transfer counting and gap detection
 - 📈 **Flight log output and analysis plots**
@@ -120,7 +120,7 @@ Failsafes latch. A receiver that recovers mid-descent does not silently hand con
 ## 🧪 Verification
 
 ```bash
-cd firmware/test && make run              # 52 unit tests, ~2 s, no dependencies
+cd firmware/test && make run              # 53 unit tests, ~2 s, no dependencies
 cd firmware/sil  && make run              # 9 SIL scenarios with fault injection, ~3 s
 cd matlab && octave-cli verify_mil_sil.m  # MATLAB model against the C++ flight code
 cd firmware      && pio run               # both target builds

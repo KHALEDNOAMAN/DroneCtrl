@@ -34,7 +34,7 @@ blocked, and a safety test nobody can run is not a safety test. The harness in
 `test_harness.h` uses Unity's macro names, so the files drop into a PlatformIO
 `pio test` setup unchanged if that is ever wanted.
 
-Three suites, 52 tests:
+Three suites, 53 tests. `make run` prints the count and the per-suite pass/fail, so the number here is checkable rather than asserted:
 
 - **`test_control`** covers the PID and the mixer. Includes regression tests for
   a derivative kick on the first call after arming, a derivative filter whose
