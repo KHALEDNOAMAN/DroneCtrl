@@ -1,0 +1,147 @@
+# MISRA C:2012 and clang-tidy over the DroneCtrl firmware.
+#
+# MISRA appears in 38% of embedded job descriptions, and the term is only worth
+# anything if something checks it on every commit. A green check and a published
+# report are the evidence; a bullet point is not.
+#
+# It starts in reporting mode on purpose. Run it once, read the report, fix or
+# justify the findings, and only then set FAIL_ON_FINDINGS to true. A gate
+# switched on before the backlog is cleared gets disabled within a week, and a
+# gate that cannot fail is worse than no gate at all.
+name: static analysis
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  FAIL_ON_FINDINGS: "false"
+
+jobs:
+  cppcheck-misra:
+    name: cppcheck and MISRA C:2012
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install cppcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cppcheck python3
+          cppcheck --version
+
+      # The MISRA addon needs a rule-texts file, which cannot be redistributed
+      # because the texts are licensed by MISRA. Without it the addon still
+      # reports every violation, by rule number instead of by name. That is
+      # enough to act on and it keeps the repository legally clean.
+      - name: Configure the MISRA addon
+        run: |
+          printf '{\n  "script": "misra.py",\n  "args": ["--rule-texts=misra_rules.txt"]\n}\n' > misra.json
+          printf 'Appendix A Summary of guidelines\n' > misra_rules.txt
+
+      - name: Run cppcheck
+        run: |
+          mkdir -p reports
+          cppcheck \
+            --enable=warning,style,performance,portability \
+            --addon=misra.json \
+            --language=c++ --std=c++17 \
+            --platform=unix32 --inline-suppr \
+            --suppress=missingIncludeSystem \
+            --suppress=unusedFunction \
+            -I firmware/include \
+            --xml --xml-version=2 \
+            firmware/include firmware/src \
+            2> reports/cppcheck.xml || true
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET, collections, pathlib
+          root = ET.parse('reports/cppcheck.xml').getroot()
+          errs = root.findall('./errors/error')
+          by_id = collections.Counter(e.get('id') for e in errs)
+          misra = [e for e in errs if str(e.get('id','')).startswith('misra')]
+          out = [f"total findings: {len(errs)}", f"MISRA findings: {len(misra)}", "", "by rule:"]
+          for rid, n in by_id.most_common():
+              out.append(f"  {n:>4}  {rid}")
+          out += ["", "first 40 findings:"]
+          for e in errs[:40]:
+              loc = e.find('location')
+              where = f"{loc.get('file')}:{loc.get('line')}" if loc is not None else "?"
+              out.append(f"  {where}  {e.get('id')}  {e.get('msg')}")
+          text = "\n".join(out)
+          pathlib.Path('reports/summary.txt').write_text(text)
+          print(text)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cppcheck-misra-report
+          path: reports/
+
+      - name: Gate
+        run: |
+          n=$(grep -c '  misra' reports/summary.txt || true)
+          n=${n:-0}
+          echo "MISRA findings: $n"
+          if [ "$FAIL_ON_FINDINGS" = "true" ] && [ "$n" -gt 0 ]; then exit 1; fi
+
+  clang-tidy:
+    name: clang-tidy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install clang-tidy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy
+          clang-tidy --version
+
+      # Checks chosen for firmware rather than for a general C++ application: no
+      # dynamic allocation on the control path, no implicit narrowing on sensor
+      # values, no uninitialised member in a struct that lands in a CAN frame.
+      - name: Configure
+        run: |
+          cat > .clang-tidy <<'YAML'
+          Checks: >
+            -*,
+            bugprone-*,
+            cert-*,
+            cppcoreguidelines-init-variables,
+            cppcoreguidelines-narrowing-conversions,
+            cppcoreguidelines-no-malloc,
+            cppcoreguidelines-pro-type-member-init,
+            cppcoreguidelines-pro-type-cstyle-cast,
+            misc-*,
+            performance-*,
+            readability-braces-around-statements,
+            -bugprone-easily-swappable-parameters,
+            -misc-non-private-member-variables-in-classes
+          WarningsAsErrors: ''
+          HeaderFilterRegex: 'firmware/include/.*'
+          YAML
+
+      # The pure core has no board dependency, which is exactly why it can be
+      # analysed with nothing but an include path. Anything here that needs a
+      # board header is a layering violation, and that failure is the signal.
+      - name: Run clang-tidy
+        run: |
+          mkdir -p reports
+          files=$(find firmware/include -name '*.h' | sort)
+          for f in $files; do
+            clang-tidy "$f" -- -std=c++17 -I firmware/include 2>&1 | tee -a reports/clang-tidy.txt
+          done
+          n=$(grep -c 'warning:' reports/clang-tidy.txt || true)
+          echo "clang-tidy warnings: ${n:-0}" | tee reports/clang-tidy-summary.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clang-tidy-report
+          path: reports/
+
+      - name: Gate
+        run: |
+          n=$(grep -c 'warning:' reports/clang-tidy.txt || true)
+          n=${n:-0}
+          if [ "$FAIL_ON_FINDINGS" = "true" ] && [ "$n" -gt 0 ]; then exit 1; fi

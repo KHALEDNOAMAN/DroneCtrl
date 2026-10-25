@@ -1,0 +1,49 @@
+# Build the Zephyr flight target on every commit.
+#
+# A port that is not built in CI stops building within a month, and then the
+# claim on the profile is about something that no longer works. This job is what
+# keeps the claim true.
+name: zephyr build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: nucleo_f411re
+    runs-on: ubuntu-latest
+    container: ghcr.io/zephyrproject-rtos/ci:v0.27.4
+    env:
+      CMAKE_PREFIX_PATH: /opt/toolchains
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: dronectrl
+
+      - name: Initialise the west workspace
+        run: |
+          west init -l dronectrl || true
+          west update --narrow -o=--depth=1
+          west zephyr-export
+
+      - name: Build
+        run: west build -b nucleo_f411re dronectrl/zephyr --pristine=always
+
+      # The two numbers that decide whether the loop fits on the part. Printed
+      # on every build so a regression shows up in a log diff rather than on
+      # hardware.
+      - name: Report flash and RAM
+        run: |
+          west build -t rom_report | tail -30
+          west build -t ram_report | tail -30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zephyr-nucleo_f411re
+          path: |
+            build/zephyr/zephyr.elf
+            build/zephyr/zephyr.hex
+            build/zephyr/.config

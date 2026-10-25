@@ -1,0 +1,75 @@
+/*
+ * Board wiring for DroneCtrl on a Nucleo-F411RE.
+ *
+ * main.c resolves five node labels: imu, esc0, esc1, esc2, esc3. Porting to a
+ * different board means another overlay with the same five labels and no change
+ * to any C.
+ *
+ * ESC timing: a standard PWM ESC takes 1000 to 2000 microseconds of pulse inside
+ * a 50 Hz frame, hence the 20 ms period. Moving to OneShot125 later changes the
+ * period here and the pulse range in config.h; the mixer does not know or care.
+ */
+
+/ {
+	chosen {
+		zephyr,watchdog = &iwdg;
+	};
+};
+
+&i2c1 {
+	status = "okay";
+	/* 400 kHz. The 14-byte burst is about 0.35 ms on the wire, comfortable
+	 * inside a 4 ms step. At the default 100 kHz it is 1.4 ms, a third of the
+	 * budget spent on one transfer. */
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb9>;
+	pinctrl-names = "default";
+
+	imu: mpu6050@68 {
+		compatible = "invensense,mpu6050";
+		reg = <0x68>;
+		status = "okay";
+	};
+};
+
+/* One timer drives all four channels, so the four outputs share a timebase and
+ * cannot drift relative to each other. Four channels on four timers would let
+ * the motors see the mixer solution at four slightly different moments. */
+&timers3 {
+	status = "okay";
+	st,prescaler = <83>;        /* 84 MHz / (83 + 1) = 1 MHz, so 1 tick = 1 us */
+
+	pwm3: pwm {
+		status = "okay";
+		pinctrl-0 = <&tim3_ch1_pa6 &tim3_ch2_pa7
+			     &tim3_ch3_pb0 &tim3_ch4_pb1>;
+		pinctrl-names = "default";
+	};
+};
+
+/ {
+	escs {
+		compatible = "pwm-leds";
+
+		esc0: esc_0 {
+			pwms = <&pwm3 1 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
+			label = "ESC front-left";
+		};
+		esc1: esc_1 {
+			pwms = <&pwm3 2 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
+			label = "ESC front-right";
+		};
+		esc2: esc_2 {
+			pwms = <&pwm3 3 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
+			label = "ESC back-left";
+		};
+		esc3: esc_3 {
+			pwms = <&pwm3 4 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
+			label = "ESC back-right";
+		};
+	};
+};
+
+&iwdg {
+	status = "okay";
+};
