@@ -3,6 +3,14 @@
 # A port that is not built in CI stops building within a month, and then the
 # claim it supports is about something that no longer works. This job is what
 # keeps the claim true.
+#
+# Two failures got it here, both worth recording rather than quietly fixing:
+#
+#   1. `west init -l` with no west.yml in the tree. Correct error: a Zephyr
+#      application IS a west manifest repository.
+#   2. Container ci:v0.27.4 ships Python 3.10.12, and Zephyr v4.4.2 requires
+#      3.12 or newer. The container tag has to track the Zephyr release, so
+#      pinning one without the other buys a failure three minutes into a build.
 name: zephyr build
 
 on:
@@ -15,18 +23,22 @@ jobs:
   build:
     name: nucleo_f411re
     runs-on: ubuntu-latest
-    container: ghcr.io/zephyrproject-rtos/ci:v0.27.4
+    container: ghcr.io/zephyrproject-rtos/ci:v0.29.4
     env:
       CMAKE_PREFIX_PATH: /opt/toolchains
     steps:
-      # The repository is the west manifest repository, so it is checked out at
-      # a known path and `west init -l` is pointed at it. The first attempt used
-      # `west init -l dronectrl` with no west.yml in the tree and failed with
-      # "can't init: no west.yml found", which is the correct error: a Zephyr
-      # application needs a manifest.
       - uses: actions/checkout@v5
         with:
           path: dronectrl
+
+      # Printed first and cheaply, because both failures above were invisible
+      # until the build was minutes in. A version mismatch should be readable
+      # in the first ten lines of the log.
+      - name: Toolchain versions
+        run: |
+          python3 --version
+          cmake --version | head -1
+          west --version
 
       - name: Initialise the west workspace
         run: |
