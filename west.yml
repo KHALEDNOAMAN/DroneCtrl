@@ -1,0 +1,26 @@
+# West manifest, so this repository is a Zephyr application in its own right
+# rather than something you drop inside somebody else's Zephyr tree.
+#
+# Zephyr is pinned to a tag, not to main. An unpinned RTOS means the flight
+# build changes under you with no commit of yours attached, which is the same
+# class of problem as a lockfile that does not match its manifest.
+#
+# Only the modules an STM32 Cortex-M4F target actually needs are imported. The
+# full Zephyr module set is tens of repositories and most of them are silicon
+# vendors this board is not. Names here that the manifest does not contain are
+# ignored, so listing both CMSIS spellings is safe across Zephyr versions.
+manifest:
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: v4.4.2
+      import:
+        name-allowlist:
+          - cmsis
+          - cmsis_6
+          - hal_stm32
+          - segger

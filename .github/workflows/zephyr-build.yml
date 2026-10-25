@@ -1,7 +1,7 @@
 # Build the Zephyr flight target on every commit.
 #
 # A port that is not built in CI stops building within a month, and then the
-# claim on the profile is about something that no longer works. This job is what
+# claim it supports is about something that no longer works. This job is what
 # keeps the claim true.
 name: zephyr build
 
@@ -19,15 +19,21 @@ jobs:
     env:
       CMAKE_PREFIX_PATH: /opt/toolchains
     steps:
+      # The repository is the west manifest repository, so it is checked out at
+      # a known path and `west init -l` is pointed at it. The first attempt used
+      # `west init -l dronectrl` with no west.yml in the tree and failed with
+      # "can't init: no west.yml found", which is the correct error: a Zephyr
+      # application needs a manifest.
       - uses: actions/checkout@v5
         with:
           path: dronectrl
 
       - name: Initialise the west workspace
         run: |
-          west init -l dronectrl || true
+          west init -l dronectrl
           west update --narrow -o=--depth=1
           west zephyr-export
+          west list
 
       - name: Build
         run: west build -b nucleo_f411re dronectrl/zephyr --pristine=always
@@ -41,6 +47,7 @@ jobs:
           west build -t ram_report | tail -30
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: zephyr-nucleo_f411re
           path: |
