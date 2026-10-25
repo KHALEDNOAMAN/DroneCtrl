@@ -62,6 +62,19 @@ west flash
 west debug              # OpenOCD over the on-board ST-LINK
 ```
 
+## Measured footprint
+
+From the CI build of `nucleo_f411re`, printed on every run so a regression shows up in a
+log diff rather than on hardware:
+
+| | used | available | |
+|---|---|---|---|
+| Flash | 58,452 B | 512 KB | 11.15% |
+| RAM | 14,720 B | 128 KB | 11.23% |
+
+Toolchain: Zephyr v4.4.2, CMake 3.28.3, west v1.5.0, Python 3.12.3, arm-zephyr-eabi from
+the Zephyr SDK.
+
 ## State of this port
 
 Done and working: the 250 Hz drift-free timer, the MPU6050 driver over Zephyr I2C with a
