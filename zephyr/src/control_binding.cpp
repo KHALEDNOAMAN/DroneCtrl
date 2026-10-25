@@ -19,8 +19,6 @@
 
 #include "control_binding.h"
 
-#include <new>
-
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
@@ -71,21 +69,33 @@ constexpr float kAccelLsbPerG  = 8192.0f;
 
 /* ---- the core -------------------------------------------------------------
  *
- * Placement new into static storage, constructed in dc_control_init rather
- * than as file-scope objects with constructors. Two reasons, both firmware
- * reasons: the heap is configured to zero so `new` cannot allocate, and a
- * constructor that runs before the kernel is up is a constructor running
- * before the clock, the console and the drivers it might want.
+ * Plain file-scope objects. The first attempt used placement new into static
+ * storage, which does not compile here: Zephyr builds C++ with `-nostdinc++`
+ * against lib/cpp/minimal/include, and the minimal C++ library does not
+ * provide the placement `operator new`. Including <new> changes nothing,
+ * because there is no <new> to include.
+ *
+ * Static objects are the right answer anyway. The heap is configured to zero,
+ * so nothing can allocate, and these constructors only initialise member
+ * floats: no driver, no clock, no console, so nothing cares that they run
+ * before the kernel is up.
+ *
+ * Declaration order matters within a translation unit, so the tuning is
+ * declared before the filter that takes a reference to it.
  */
-alignas(AttitudeEKF) uint8_t g_ekf_storage[sizeof(AttitudeEKF)];
-alignas(FlightStateMachine) uint8_t g_fsm_storage[sizeof(FlightStateMachine)];
-alignas(PIDController<float>) uint8_t g_pid_storage[3][sizeof(PIDController<float>)];
+const AttitudeEKF::Tuning kEkfTuning{};          /* the header's defaults */
+AttitudeEKF g_ekf{kEkfTuning};
 
-AttitudeEKF *g_ekf;
-FlightStateMachine *g_fsm;
-PIDController<float> *g_pid_roll;
-PIDController<float> *g_pid_pitch;
-PIDController<float> *g_pid_yaw;
+/* Default-constructed and given its limits in dc_control_init, mirroring
+ * firmware/src/main.cpp, which does `FlightStateMachine fsm;` then setLimits. */
+FlightStateMachine g_fsm;
+
+PIDController<float> g_pid_roll{kPidRollKp, kPidRollKi, kPidRollKd,
+				kPidMaxIntegral, kPidMaxOutput};
+PIDController<float> g_pid_pitch{kPidPitchKp, kPidPitchKi, kPidPitchKd,
+				 kPidMaxIntegral, kPidMaxOutput};
+PIDController<float> g_pid_yaw{kPidYawKp, kPidYawKi, kPidYawKd,
+			       kPidMaxIntegral, kPidMaxOutput};
 
 bool g_initialised_from_accel;
 
@@ -170,23 +180,16 @@ extern "C" int dc_imu_read(const struct i2c_dt_spec *bus, struct dc_imu_sample *
 
 extern "C" void dc_control_init(void)
 {
-	const AttitudeEKF::Tuning tuning{};          /* the header's defaults */
-	g_ekf = new (static_cast<void *>(g_ekf_storage)) AttitudeEKF(tuning);
-
 	FlightLimits limits{};
 	limits.max_tilt_deg = kMaxTiltAngleDeg;
 	limits.min_battery_volts = kMinBatteryVolts;
-	g_fsm = new (static_cast<void *>(g_fsm_storage)) FlightStateMachine(limits);
+	g_fsm.setLimits(limits);
 
-	g_pid_roll = new (static_cast<void *>(g_pid_storage[0]))
-		PIDController<float>(kPidRollKp, kPidRollKi, kPidRollKd,
-				     kPidMaxIntegral, kPidMaxOutput);
-	g_pid_pitch = new (static_cast<void *>(g_pid_storage[1]))
-		PIDController<float>(kPidPitchKp, kPidPitchKi, kPidPitchKd,
-				     kPidMaxIntegral, kPidMaxOutput);
-	g_pid_yaw = new (static_cast<void *>(g_pid_storage[2]))
-		PIDController<float>(kPidYawKp, kPidYawKi, kPidYawKd,
-				     kPidMaxIntegral, kPidMaxOutput);
+	g_ekf.reset();
+	g_pid_roll.reset();
+	g_pid_pitch.reset();
+	g_pid_yaw.reset();
+	g_fsm.reset();
 
 	g_initialised_from_accel = false;
 }
@@ -206,17 +209,17 @@ extern "C" void dc_control_step(const struct dc_imu_sample *imu, bool imu_valid,
 	/* 1. estimator */
 	if (imu_valid) {
 		if (!g_initialised_from_accel) {
-			g_ekf->initializeFromAccel(imu->accel_g[0], imu->accel_g[1],
+			g_ekf.initializeFromAccel(imu->accel_g[0], imu->accel_g[1],
 						   imu->accel_g[2]);
 			g_initialised_from_accel = true;
 		}
-		g_ekf->predict(imu->gyro_dps[0], imu->gyro_dps[1], imu->gyro_dps[2], dt);
-		g_ekf->updateAccel(imu->accel_g[0], imu->accel_g[1], imu->accel_g[2]);
+		g_ekf.predict(imu->gyro_dps[0], imu->gyro_dps[1], imu->gyro_dps[2], dt);
+		g_ekf.updateAccel(imu->accel_g[0], imu->accel_g[1], imu->accel_g[2]);
 	} else if (g_initialised_from_accel) {
 		/* A dropped read is not a level airframe. Propagate and let the state
 		 * machine see a diverging estimate, rather than feeding the filter a
 		 * zero sample it would believe. */
-		g_ekf->predict(0.0f, 0.0f, 0.0f, dt);
+		g_ekf.predict(0.0f, 0.0f, 0.0f, dt);
 	}
 
 	/* 2. state machine.
@@ -225,33 +228,33 @@ extern "C" void dc_control_step(const struct dc_imu_sample *imu, bool imu_valid,
 	 * signal_lost is held true on purpose: the machine cannot leave DISARMED
 	 * and a bench board cannot spin a motor. */
 	FlightInputs in{};
-	in.roll_deg = g_ekf->getRollDeg();
-	in.pitch_deg = g_ekf->getPitchDeg();
-	in.estimator_diverged = g_ekf->isDiverged();
+	in.roll_deg = g_ekf.getRollDeg();
+	in.pitch_deg = g_ekf.getPitchDeg();
+	in.estimator_diverged = g_ekf.isDiverged();
 	in.signal_lost = true;        /* TODO: wire the receiver */
 	in.throttle_norm = 0.0f;
 	in.yaw_norm = 0.0f;
 	in.battery_volts = 12.6f;     /* TODO: wire the battery ADC */
 
-	g_fsm->update(in, now_ms, dt);
+	g_fsm.update(in, now_ms, dt);
 
-	if (!g_fsm->motorsEnabled()) {
-		g_pid_roll->reset();
-		g_pid_pitch->reset();
-		g_pid_yaw->reset();
+	if (!g_fsm.motorsEnabled()) {
+		g_pid_roll.reset();
+		g_pid_pitch.reset();
+		g_pid_yaw.reset();
 		return;
 	}
 
 	/* 3. attitude PIDs. Setpoints come from the sticks in a flying build;
 	 * level is the bench case. */
-	const bool hold = g_fsm->holdIntegrators();
-	const float roll_cmd = g_pid_roll->compute(0.0f, in.roll_deg, dt, hold);
-	const float pitch_cmd = g_pid_pitch->compute(0.0f, in.pitch_deg, dt, hold);
-	const float yaw_cmd = g_pid_yaw->compute(0.0f, imu->gyro_dps[2], dt, hold);
+	const bool hold = g_fsm.holdIntegrators();
+	const float roll_cmd = g_pid_roll.compute(0.0f, in.roll_deg, dt, hold);
+	const float pitch_cmd = g_pid_pitch.compute(0.0f, in.pitch_deg, dt, hold);
+	const float yaw_cmd = g_pid_yaw.compute(0.0f, imu->gyro_dps[2], dt, hold);
 
 	/* 4. mix. The same pure function the host tests and the SIL harness call. */
 	const float base = kEscIdle +
-		g_fsm->commandedThrottle() * (kEscMax - kEscIdle);
+		g_fsm.commandedThrottle() * (kEscMax - kEscIdle);
 	const mixer::Outputs mix = mixer::mixX(base, pitch_cmd, roll_cmd, yaw_cmd,
 					       kEscMin, kEscMax);
 
