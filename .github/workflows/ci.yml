@@ -15,6 +15,26 @@ jobs:
         working-directory: firmware/test
         run: make run
 
+  # The same portable headers under GoogleTest: parameterised property tests
+  # over a table of inputs (the mixer alone runs 225 command combinations),
+  # typed tests that run the PID in float and double, and the failsafe policy
+  # as one table. Kept separate from host-tests so that suite still needs
+  # nothing but a compiler.
+  gtest:
+    name: GoogleTest (property and typed tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        working-directory: firmware/gtest
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        working-directory: firmware/gtest
+        run: cmake --build build -j
+      - name: Test
+        working-directory: firmware/gtest
+        run: ctest --test-dir build --output-on-failure
+
   sil:
     name: Software-in-the-loop flight
     runs-on: ubuntu-latest

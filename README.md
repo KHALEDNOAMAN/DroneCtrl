@@ -33,6 +33,7 @@ The control, estimation and safety code carries no Arduino dependency, so the sa
 - 🔀 **Saturation-aware motor mixer** that sacrifices throttle rather than attitude authority
 - 🛡️ **Latching failsafe state machine** with a documented land-versus-cut policy per fault
 - 🧪 **53 host unit tests** on the exact flight headers, no board and no dependencies
+- 🔬 **483 GoogleTest cases**: parameterised property tests over the mixer, the PID in both float and double, the failsafe policy as one table, and the EKF across its envelope
 - ✈️ **Software-in-the-loop harness** flying 9 scenarios with injected faults, plus an 800-run Monte Carlo campaign
 - 🔌 **CAN telemetry frame encoding** with transfer counting and gap detection
 - 📈 **Flight log output and analysis plots**
@@ -76,7 +77,7 @@ the tuning panel affects both.
 | **Estimation** | Extended Kalman filter, gyro bias estimation, innovation monitoring |
 | **Control** | Cascaded PID, saturation-aware motor mixing, failsafe state machine |
 | **Modelling** | MATLAB and Octave, plant identification, pole placement |
-| **Verification** | Host unit tests, software-in-the-loop, MIL/SIL equivalence, fault injection, GitHub Actions |
+| **Verification** | Host unit tests, GoogleTest, software-in-the-loop, MIL/SIL equivalence, fault injection, GitHub Actions |
 | **Simulator & HUD** | TypeScript, React, Three.js (@react-three/fiber, @react-three/drei), WebGL |
 
 ## ⚙️ How It Works
@@ -123,6 +124,7 @@ Failsafes latch. A receiver that recovers mid-descent does not silently hand con
 
 ```bash
 cd firmware/test && make run              # 53 unit tests, ~2 s, no dependencies
+cd firmware/gtest && cmake -S . -B build && cmake --build build && ctest --test-dir build  # 483 GoogleTest cases
 cd firmware/sil  && make run              # 9 SIL scenarios with fault injection, ~3 s
 cd firmware/sil  && make monte-carlo     # 800 randomised airframes against fixed gains
 cd matlab && octave-cli verify_mil_sil.m  # MATLAB model against the C++ flight code
@@ -220,6 +222,7 @@ DroneCtrl/
 │   ├── include/       # Estimator, control law, mixer, state machine, drivers
 │   ├── src/           # main.cpp, which is wiring and nothing else
 │   ├── test/          # Host unit tests, plain g++, no dependencies
+│   ├── gtest/         # GoogleTest property and typed tests (CMake)
 │   ├── sil/           # Software-in-the-loop harness and flight logs
 │   └── platformio.ini # Build configuration, plus a host environment
 ├── simulator/         # Three.js 3D web simulator + React telemetry HUD

@@ -70,12 +70,14 @@ flowchart LR
     SRC["<b>firmware/include</b><br/>estimator, control law,<br/>mixer, state machine"]
 
     UT["<b>firmware/test</b><br/>53 unit tests<br/><i>g++, ~2 s</i>"]
+    GT["<b>firmware/gtest</b><br/>483 GoogleTest cases<br/><i>property and typed tests</i>"]
     SIL["<b>firmware/sil</b><br/>9 scenarios + 800 Monte Carlo<br/><i>rigid body plant</i>"]
     FW["<b>firmware/src</b><br/>main.cpp<br/><i>AVR and ESP32</i>"]
 
     MIL["<b>matlab/</b><br/>independent model<br/><i>Octave</i>"]
 
     SRC --> UT
+    SRC --> GT
     SRC --> SIL
     SRC --> FW
     SIL <-->|"equivalence<br/>0.03 deg RMS"| MIL
@@ -84,7 +86,7 @@ flowchart LR
     classDef test fill:#ecfdf5,stroke:#0d9488,color:#134e4a
     classDef flight fill:#fef3c7,stroke:#d97706,color:#78350f
     class SRC src
-    class UT,SIL,MIL test
+    class UT,GT,SIL,MIL test
     class FW flight
 ```
 

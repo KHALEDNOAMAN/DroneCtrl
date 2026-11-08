@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **GoogleTest suite** (`firmware/gtest`, 483 tests, its own CI job). Property
+  tests run the mixer over 225 command combinations, typed tests run the PID
+  in float and double, and the failsafe policy and EKF envelope are each one
+  parameterised table. Every test was checked against deliberately broken
+  copies of the flight code; all eight breaks were caught. The dependency-free
+  `firmware/test` suite stays as it is.
 - **Waypoint autopilot** for the simulator. Cascaded guidance, velocity and
   attitude-mapping loops feed the existing attitude PIDs, so AUTO and MANUAL
   share one controller. Includes vertical takeoff, altitude hold with
