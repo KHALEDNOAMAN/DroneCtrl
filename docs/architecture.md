@@ -62,14 +62,14 @@ integrator spent the saturation winding up against a limit it could not see.
 ## The line through the middle
 
 `attitude_ekf.h`, `flight_state.h`, `pid_controller.h`, `mixer_math.h` and
-`can_telemetry.h` include no Arduino header. That is not tidiness. It is what
+`can_telemetry.h` and `mavlink_telemetry.h` include no Arduino header. That is not tidiness. It is what
 allows three different harnesses to attach to the same source:
 
 ```mermaid
 flowchart LR
     SRC["<b>firmware/include</b><br/>estimator, control law,<br/>mixer, state machine"]
 
-    UT["<b>firmware/test</b><br/>53 unit tests<br/><i>g++, ~2 s</i>"]
+    UT["<b>firmware/test</b><br/>58 unit tests<br/><i>g++, ~2 s</i>"]
     SIL["<b>firmware/sil</b><br/>9 scenarios + 800 Monte Carlo<br/><i>rigid body plant</i>"]
     FW["<b>firmware/src</b><br/>main.cpp<br/><i>AVR and ESP32</i>"]
 
@@ -107,6 +107,7 @@ implementation is only worth having if something checks it against the first.
 | `pid_controller.h` | one axis of attitude control | no |
 | `mixer_math.h` | torque commands to four ESC values | no |
 | `can_telemetry.h` | telemetry frame encoding, transfer counting | no |
+| `mavlink_telemetry.h` | MAVLink v2 frames for a ground station | no |
 | `config.h` | gains, limits, timing; pin block guarded | partly |
 | `imu.h` | MPU6050 registers, scaling, calibration | yes |
 | `motor_mixer.h` | four Servo objects | yes |

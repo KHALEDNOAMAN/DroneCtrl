@@ -29,6 +29,14 @@ jobs:
       - name: Build and fly
         working-directory: firmware/sil
         run: make run
+      # Every scenario also writes a MAVLink .tlog. Decode them with pymavlink,
+      # which is generated from the official message definitions, and match
+      # every frame against the CSV log of the same flight. A wrong CRC seed
+      # or field order would be silently dropped by a ground station.
+      - name: Decode MAVLink telemetry with pymavlink
+        run: |
+          pip install pymavlink
+          python3 tools/verify_mavlink.py firmware/sil/logs
       # Holds the gains fixed and randomises mass, inertia, thrust, arm length
       # and motor lag over a deliberately wide spread. Fails if the pass rate
       # drops below 90 percent, so a change that narrows the envelope the gains
@@ -41,7 +49,9 @@ jobs:
         if: always()
         with:
           name: sil-flight-logs
-          path: firmware/sil/logs/*.csv
+          path: |
+            firmware/sil/logs/*.csv
+            firmware/sil/logs/*.tlog
           if-no-files-found: warn
 
   # Model in the loop, and the check that it still agrees with the flight code.

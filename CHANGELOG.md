@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **MAVLink v2 telemetry.** The flight controller sends HEARTBEAT,
+  SYS_STATUS, ATTITUDE and VFR_HUD over USB serial to any MAVLink ground
+  station, without blocking the control loop. Every SIL scenario also writes
+  a `.tlog` that QGroundControl can replay. Checked byte for byte against
+  pymavlink in the host tests, and every SIL frame decoded with pymavlink and
+  matched against the CSV log in CI.
 - **Waypoint autopilot** for the simulator. Cascaded guidance, velocity and
   attitude-mapping loops feed the existing attitude PIDs, so AUTO and MANUAL
   share one controller. Includes vertical takeoff, altitude hold with

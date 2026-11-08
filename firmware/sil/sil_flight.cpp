@@ -59,6 +59,7 @@
 #include "pid_controller.h"
 #include "mixer_math.h"
 #include "flight_state.h"
+#include "mavlink_telemetry.h"
 
 // config.h is Arduino-free apart from one uint32_t, so the harness can take the
 // real gains rather than a copy that drifts.
@@ -334,6 +335,8 @@ struct Sample {
     float roll_est, pitch_est;
     float bias_p_est;
     float z, throttle_cmd;
+    float vz;
+    float battery;
     float pwm[4];
     int state;
     int fault;
@@ -487,6 +490,8 @@ Result run(const Scenario& sc) {
             s.pitch_est = ctrl.ekf.getPitchDeg();
             s.bias_p_est = ctrl.ekf.getBiasP() * kDeg;
             s.z = plant.z;
+            s.vz = plant.vz;
+            s.battery = battery;
             s.throttle_cmd = ctrl.fsm.commandedThrottle();
             for (int m = 0; m < 4; ++m) s.pwm[m] = pwm[m];
             s.state = (int)ctrl.fsm.state();
@@ -796,6 +801,72 @@ bool writeCsv(const Result& r, const std::string& dir) {
     return true;
 }
 
+/**
+ * The same flight as a MAVLink telemetry log. QGroundControl opens .tlog files
+ * through its replay tool and plays them back as if a vehicle were flying, so
+ * a SIL scenario can be watched on the instruments a real autopilot feeds.
+ *
+ * Format: each MAVLink frame is preceded by a big-endian uint64 timestamp in
+ * microseconds. ATTITUDE and VFR_HUD at the 50 Hz log rate, HEARTBEAT and
+ * SYS_STATUS at 1 Hz.
+ */
+bool writeTlog(const Result& r, const std::string& dir) {
+    const std::string path = dir + "/" + r.name + ".tlog";
+    FILE* f = fopen(path.c_str(), "wb");
+    if (!f) {
+        std::printf("  could not write %s\n", path.c_str());
+        return false;
+    }
+    // Fixed epoch so the file is byte-for-byte reproducible run to run.
+    const uint64_t epoch_us = 1767225600ull * 1000000ull; // 2026-01-01 00:00 UTC
+    mavlink::Encoder enc(1, 1);
+    uint8_t buf[mavlink::kMaxFrame];
+
+    auto emit = [&](uint64_t t_us, uint8_t n) {
+        uint8_t ts[8];
+        for (int i = 0; i < 8; ++i) ts[i] = (uint8_t)(t_us >> (56 - 8 * i));
+        fwrite(ts, 1, 8, f);
+        fwrite(buf, 1, n, f);
+    };
+
+    float next_slow = 0.0f;
+    for (size_t i = 0; i < r.log.size(); ++i) {
+        const Sample& s = r.log[i];
+        mavlink::Snapshot snap;
+        snap.time_boot_ms = (uint32_t)(s.t * 1000.0f + 0.5f);
+        snap.roll_deg = s.roll_est;
+        snap.pitch_deg = s.pitch_est;
+        if (i > 0) {
+            const Sample& prev = r.log[i - 1];
+            const float dt = s.t - prev.t;
+            if (dt > 0.0f) {
+                snap.roll_rate_dps = (s.roll_est - prev.roll_est) / dt;
+                snap.pitch_rate_dps = (s.pitch_est - prev.pitch_est) / dt;
+            }
+        }
+        snap.altitude_m = s.z;
+        snap.climb_mps = s.vz;
+        snap.throttle_norm = s.throttle_cmd;
+        snap.battery_volts = s.battery;
+        const FlightState st = (FlightState)s.state;
+        snap.flight_state = (uint8_t)s.state;
+        snap.armed = (st == FlightState::ARMED || st == FlightState::FAILSAFE_LAND);
+        snap.severity = st == FlightState::FAILSAFE_CUT ? 2
+                      : st == FlightState::FAILSAFE_LAND ? 1 : 0;
+
+        const uint64_t t_us = epoch_us + (uint64_t)(s.t * 1e6f);
+        if (s.t >= next_slow) {
+            emit(t_us, enc.heartbeat(snap, buf));
+            emit(t_us, enc.sysStatus(snap, buf));
+            next_slow += 1.0f;
+        }
+        emit(t_us, enc.attitude(snap, buf));
+        emit(t_us, enc.vfrHud(snap, buf));
+    }
+    fclose(f);
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -887,6 +958,7 @@ int main(int argc, char** argv) {
     for (const auto& sc : scenarios) {
         const Result r = run(sc);
         writeCsv(r, out_dir);
+        writeTlog(r, out_dir);
 
         // The legacy-gain run passes by failing. Asserting that keeps the
         // regression honest: if someone reintroduces those gains and the
