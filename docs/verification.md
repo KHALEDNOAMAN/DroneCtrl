@@ -16,11 +16,12 @@ always drift.
 | Layer | What it runs | Catches | Runtime |
 | --- | --- | --- | --- |
 | Host unit tests | `firmware/test` | arithmetic, boundaries, state transitions | ~2 s |
+| GoogleTest | `firmware/gtest` | properties over whole input tables, float and double | ~2 s |
 | SIL | `firmware/sil` | closed-loop behaviour, stability, failsafes | ~3 s |
 | Target build | `pio run` | anything that only fails on AVR or ESP32 | ~1 min |
 | Bench | a person | everything the model does not contain | not automated |
 
-All three automated layers run on every push.
+All four automated layers run on every push.
 
 ## Host unit tests
 
@@ -50,6 +51,44 @@ on first run: clearing the state on a fault was not enough on its own, because
 the arm gesture was still being held and the next line walked straight back
 into `ARMING`. An airframe with a flat battery would have armed. The fix is in
 `flight_state.h` and the test is named after it.
+
+## GoogleTest
+
+```
+cd firmware/gtest
+cmake -S . -B build && cmake --build build && ctest --test-dir build
+```
+
+The hand-rolled suite above checks named cases and needs nothing installed.
+This one links the same headers under GoogleTest (pinned to the v1.18.0
+commit) for the three things that framework does better than a hand-rolled
+harness:
+
+- **Property tests over a table (`TEST_P`).** The mixer is checked over 225
+  combinations of throttle, pitch, roll and yaw, from idle to full throttle and
+  far past the range the ESCs can deliver. Two properties must hold for every
+  one: no output leaves 1000 to 2000 microseconds, and the delivered torque
+  points the same way as the commanded torque even when it had to be scaled.
+- **Typed tests (`TYPED_TEST`).** `PIDController` is a template, so each of its
+  behaviours runs in `float`, which the aircraft uses, and in `double`.
+- **The failsafe policy as one table.** Every fault, the failsafe an armed
+  airframe must take, that it stays latched once the fault clears, and that
+  the same fault on the ground blocks arming.
+
+483 tests in all. They passed on the first run, which on its own proves
+nothing, so each was checked against a deliberately broken copy of the flight
+code. Every break was caught:
+
+| Break introduced | Tests that failed |
+| --- | --- |
+| One mixer sign flipped | 151 |
+| Mixer stops scaling torque that cannot fit | 135 |
+| PID derivative on error instead of on measurement | 2 |
+| PID ignores the hold-integrator request | 2 |
+| Ground fault no longer blocks arming (the bug found earlier) | 4 |
+| A cut failsafe unlatches once the fault clears | 2 |
+| Excessive tilt lands instead of cutting | 1 |
+| EKF gravity model sign flipped | 5 |
 
 ## Software in the loop
 
@@ -167,6 +206,7 @@ four ESC commands, and the state machine's state and fault as integers.
 
 ```
 cd firmware/test && make run     # unit tests
+cd firmware/gtest && cmake -S . -B build && cmake --build build && ctest --test-dir build
 cd firmware/sil  && make run     # SIL scenarios
 cd firmware      && pio run      # both target builds
 python3 tools/plot_flight_logs.py  # regenerate the figures

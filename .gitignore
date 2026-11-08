@@ -11,3 +11,4 @@ firmware/test/build/
 firmware/sil/sil_flight
 firmware/sil/*.d
 firmware/sil/logs/
+firmware/gtest/build/
