@@ -4,7 +4,7 @@ How this firmware is checked, and what each layer can and cannot catch.
 
 The organising idea is that **the control, estimation and safety logic contains
 no Arduino dependency**. `attitude_ekf.h`, `pid_controller.h`, `mixer_math.h`,
-`flight_state.h` and `can_telemetry.h` are arithmetic and state; hardware
+`flight_state.h`, `can_telemetry.h` and `mavlink_telemetry.h` are arithmetic and state; hardware
 access lives in thin wrappers that include them. That separation is what lets
 the tests and the simulator link *the same source the flight controller runs*,
 rather than a reimplementation of it. A control law verified in a separate
@@ -34,7 +34,7 @@ blocked, and a safety test nobody can run is not a safety test. The harness in
 `test_harness.h` uses Unity's macro names, so the files drop into a PlatformIO
 `pio test` setup unchanged if that is ever wanted.
 
-Three suites, 53 tests. `make run` prints the count and the per-suite pass/fail, so the number here is checkable rather than asserted:
+Four suites, 58 tests. `make run` prints the count and the per-suite pass/fail, so the number here is checkable rather than asserted:
 
 - **`test_control`** covers the PID and the mixer. Includes regression tests for
   a derivative kick on the first call after arming, a derivative filter whose
@@ -44,6 +44,8 @@ Three suites, 53 tests. `make run` prints the count and the per-suite pass/fail,
   See [state_estimation.md](state_estimation.md).
 - **`test_safety`** covers the arming gesture, every failsafe branch, the
   latch, and the CAN telemetry encoding.
+- **`test_mavlink`** checks the MAVLink encoder byte for byte against
+  pymavlink. See [MAVLink telemetry](#mavlink-telemetry).
 
 **This layer found a real defect.** `test_fault_on_ground_blocks_arming` failed
 on first run: clearing the state on a fault was not enough on its own, because
@@ -138,6 +140,36 @@ Measured results after the change:
 arm and 6 N motors. They are a defensible starting point, not a substitute for
 bench tuning on real hardware. Change the airframe and the derivation has to be
 redone with its numbers.
+
+## MAVLink telemetry
+
+`mavlink_telemetry.h` encodes four MAVLink v2 messages, HEARTBEAT, SYS_STATUS,
+ATTITUDE and VFR_HUD, with no library. The flight controller sends them over
+the USB serial port at 115200 baud, at most one frame per control cycle and
+only when the transmit buffer has room, so telemetry can drop but can never
+stall the loop. Any ground station that speaks MAVLink, QGroundControl
+included, shows the attitude, the armed state, the failsafe severity and the
+battery voltage.
+
+Every SIL scenario also writes `logs/<scenario>.tlog`: the same flight as a
+MAVLink telemetry log, which QGroundControl's log replay plays back on its own
+instruments.
+
+A hand-written encoder is only worth trusting if something independent checks
+it, so two things do:
+
+- **`test_mavlink`** compares the encoder's output byte for byte with frames
+  produced by pymavlink for the same values. That covers the CRC seed, the
+  wire field order, the sequence counter and the truncation of trailing zero
+  bytes, with nothing installed.
+- **`tools/verify_mavlink.py`** runs in CI after the SIL flights. It decodes
+  every frame of every `.tlog` with pymavlink, fails on any bad checksum or
+  sequence gap, and matches each message against the CSV log of the same
+  flight: time, roll, pitch, altitude, throttle, armed flag and flight state.
+
+Both were checked against broken copies of the encoder. A wrong CRC seed, a
+field written out of order, a skipped sequence number, a wrong throttle scale
+and a payload truncated to nothing were each caught.
 
 ## Target build
 

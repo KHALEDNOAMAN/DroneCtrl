@@ -20,7 +20,7 @@ CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wpedantic -I../include -MMD -MP
 BUILD    := build
 
-SUITES := test_control test_estimation test_safety
+SUITES := test_control test_estimation test_safety test_mavlink
 BINS   := $(addprefix $(BUILD)/,$(SUITES))
 DEPS   := $(BINS:=.d)
 

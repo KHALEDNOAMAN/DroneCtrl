@@ -28,6 +28,7 @@
 #include "pid_controller.h"
 #include "battery.h"
 #include "flight_state.h"
+#include "mavlink_telemetry.h"
 
 IMU imu;
 Receiver rx;
@@ -41,7 +42,45 @@ PIDController<float> pidRoll(PID_ROLL_KP, PID_ROLL_KI, PID_ROLL_KD, 100.0f, 400.
 PIDController<float> pidPitch(PID_PITCH_KP, PID_PITCH_KI, PID_PITCH_KD, 100.0f, 400.0f);
 PIDController<float> pidYaw(PID_YAW_KP, PID_YAW_KI, PID_YAW_KD, 100.0f, 400.0f);
 
+mavlink::Encoder mav(MAVLINK_SYSTEM_ID, 1);
+
 unsigned long prev_loop_time = 0;
+
+/**
+ * Send at most one MAVLink frame this cycle, and only if it fits in the serial
+ * transmit buffer right now. Telemetry is allowed to drop; the control loop is
+ * not allowed to wait for it.
+ */
+void sendTelemetry(uint32_t cycle) {
+    if (!MAVLINK_ENABLED) return;
+
+    constexpr uint32_t kLoopHz = (uint32_t)LOOP_FREQUENCY_HZ;
+    constexpr uint32_t kAttEvery = kLoopHz / MAVLINK_ATTITUDE_HZ;
+    constexpr uint32_t kHudEvery = kLoopHz / MAVLINK_HUD_HZ;
+
+    mavlink::Snapshot s;
+    s.time_boot_ms = millis();
+    s.roll_deg = imu.getRoll();
+    s.pitch_deg = imu.getPitch();
+    s.yaw_rate_dps = imu.getYawRate();
+    s.throttle_norm = fsm.commandedThrottle();
+    s.battery_volts = battery.getVoltage();
+    s.armed = fsm.motorsEnabled();
+    s.flight_state = (uint8_t)fsm.state();
+    s.severity = fsm.state() == FlightState::FAILSAFE_CUT ? 2
+               : fsm.state() == FlightState::FAILSAFE_LAND ? 1 : 0;
+
+    uint8_t buf[mavlink::kMaxFrame];
+    uint8_t n = 0;
+    // Staggered so two messages never fall due on the same cycle.
+    const uint32_t phase = cycle % kLoopHz;
+    if (phase == 0) n = mav.heartbeat(s, buf);
+    else if (phase == 1) n = mav.sysStatus(s, buf);
+    else if (cycle % kHudEvery == 2) n = mav.vfrHud(s, buf);
+    else if (cycle % kAttEvery == 3) n = mav.attitude(s, buf);
+
+    if (n > 0 && Serial.availableForWrite() >= n) Serial.write(buf, n);
+}
 
 void setup() {
     Serial.begin(115200);
@@ -100,6 +139,10 @@ void loop() {
     in.estimator_diverged = imu.isDiverged();
 
     fsm.update(in, millis(), DT);
+
+    // Telemetry reports this cycle's state, before the motors may be stopped.
+    static uint32_t cycle = 0;
+    sendTelemetry(cycle++);
 
     // --- control and act --------------------------------------------------
     if (!fsm.motorsEnabled()) {

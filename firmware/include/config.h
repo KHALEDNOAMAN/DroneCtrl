@@ -102,3 +102,12 @@ constexpr float MAX_TILT_SETPOINT = 30.0f; // degrees
 constexpr uint16_t ESC_MIN = 1000;
 constexpr uint16_t ESC_MAX = 2000;
 constexpr uint16_t ESC_IDLE = 1050; // Idle spin when armed
+
+// MAVLink telemetry on the USB serial port, for QGroundControl or any other
+// ground station. Rates are per second. The loop sends at most one frame per
+// cycle and only when the serial buffer has room, so telemetry can be dropped
+// but can never stall the 250 Hz control loop.
+constexpr bool MAVLINK_ENABLED = true;
+constexpr uint8_t MAVLINK_SYSTEM_ID = 1;
+constexpr uint8_t MAVLINK_ATTITUDE_HZ = 25;
+constexpr uint8_t MAVLINK_HUD_HZ = 5;
