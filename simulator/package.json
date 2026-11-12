@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "check": "node tools/flight-check.mjs"
+    "check": "node tools/flight-check.mjs",
+    "hil-check": "node tools/hil-check.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^9.92.0",
