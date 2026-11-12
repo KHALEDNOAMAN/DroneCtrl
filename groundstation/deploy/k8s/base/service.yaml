@@ -1,0 +1,44 @@
+# Dashboard, API and metrics, inside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: groundstation
+  namespace: dronectrl
+  labels:
+    app.kubernetes.io/name: groundstation
+    app.kubernetes.io/part-of: dronectrl
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: groundstation
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+---
+# Where vehicles send telemetry. A separate Service so the UDP side can be
+# exposed to a radio or a field network without exposing the dashboard with
+# it. NodePort works on any cluster; on a cloud cluster switch the type to
+# LoadBalancer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: groundstation-mavlink
+  namespace: dronectrl
+  labels:
+    app.kubernetes.io/name: groundstation
+    app.kubernetes.io/part-of: dronectrl
+spec:
+  type: NodePort
+  # Keep the sender's address, so per-vehicle sequence tracking is not
+  # confused by SNAT, and avoid a second hop for a latency sensitive stream.
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: groundstation
+  ports:
+    - name: mavlink
+      port: 14550
+      targetPort: mavlink
+      protocol: UDP
+      nodePort: 31455

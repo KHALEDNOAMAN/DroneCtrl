@@ -10,6 +10,8 @@ import { ScoreDisplay } from './components/ScoreDisplay';
 import { ControlsHelp } from './components/ControlsHelp';
 import { FlightModeBadge } from './components/FlightModeBadge';
 import { AttitudeIndicator } from './components/AttitudeIndicator';
+import { HilPanel } from './components/HilPanel';
+import { HilController } from './hil/HilController';
 import { DroneSimulator } from './engine/DronePhysics';
 import { Autopilot } from './engine/Autopilot';
 import { WindSystem } from './engine/WindSystem';
@@ -36,6 +38,9 @@ const autopilot = new Autopilot(CHECKPOINTS);
 const wind = new WindSystem();
 
 const keys: Record<string, boolean> = {};
+
+/** Hardware in the loop. While a board is connected it flies, not the engine. */
+const hil = new HilController(keys);
 
 /** Keys that mean "the pilot is flying", so the autopilot should stand down. */
 const FLIGHT_KEYS = new Set([' ', 'shift', 'w', 'a', 's', 'd', 'q', 'e']);
@@ -91,6 +96,38 @@ const Scene = React.memo<SceneProps>(({
 
   useFrame((state, delta) => {
     const gs = gameStateRef.current;
+
+    // A board is flying. Its plant is stepped by the HIL session in lockstep
+    // with the board; all this does is draw it.
+    if (hil.active && hil.session) {
+      const plant = hil.session.plant;
+      const { position, rotation } = plant.sceneTransform();
+      posRef.current.set(...position);
+      rotRef.current.set(...rotation);
+      const rpm = plant.thrust.map((t) => Math.sqrt(Math.max(t, 0) / plant.cfg.maxThrust) * 11000) as
+        [number, number, number, number];
+      motorSpeedsRef.current = rpm;
+      if (droneRef.current) {
+        droneRef.current.position.copy(posRef.current);
+        droneRef.current.rotation.set(rotation[0], rotation[1], rotation[2], 'YXZ');
+      }
+      hudTimer.current += delta;
+      if (hudTimer.current > 0.07) {
+        hudTimer.current = 0;
+        onTelemetry({
+          altitude: plant.z,
+          verticalSpeed: plant.vz,
+          speed: Math.hypot(plant.vx, plant.vy, plant.vz),
+          heading: (-plant.yaw * 180) / Math.PI,
+          battery: 100,
+          roll: rotation[2],
+          pitch: rotation[0],
+          motorRPMs: rpm,
+          pidOutputs: { roll: 0, pitch: 0, yaw: 0 },
+        }, autopilot.status);
+      }
+      return;
+    }
 
     accumulator.current = Math.min(accumulator.current + delta, MAX_FRAME_TIME);
 
@@ -270,6 +307,8 @@ export default function App() {
         setFlightMode('MANUAL');
       }
 
+      if (key === 'l' && hil.active) hil.toggleLink();
+
       if (key === 'c') {
         setGameState(prev => {
           const i = CAMERA_CYCLE.indexOf(prev.cameraMode);
@@ -372,6 +411,8 @@ export default function App() {
         )}
 
         <ScoreDisplay gameState={gameState} status={apStatus} totalGates={CHECKPOINTS.length} />
+
+        <HilPanel hil={hil} />
 
         {gameState.showHelp && <ControlsHelp mode={gameState.flightMode} />}
       </div>

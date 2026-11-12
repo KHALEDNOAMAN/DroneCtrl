@@ -538,3 +538,37 @@ canvas { display: block; }
   .attitude-indicator { transform: scale(0.82); transform-origin: bottom right; }
   .score-value { font-size: 30px; }
 }
+
+/* ---------- Hardware in the loop (bottom centre, the one free corner) ---------- */
+.hil-panel {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 16px;
+  width: 300px;
+  padding: 12px 14px;
+  pointer-events: auto;
+  font-size: 11px;
+}
+.hil-button {
+  width: 100%;
+  margin: 8px 0;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(120, 200, 255, 0.45);
+  background: rgba(40, 90, 140, 0.35);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.hil-button:disabled { opacity: 0.6; cursor: wait; }
+.hil-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  margin-bottom: 6px;
+}
+.hil-grid b { font-weight: 600; text-align: right; }
+.hil-note { opacity: 0.7; line-height: 1.4; }
+.hil-error { color: #ff8a80; margin-bottom: 6px; }
+@media (max-width: 720px) { .hil-panel { display: none; } }

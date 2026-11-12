@@ -3,16 +3,18 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include "config.h"
-#include "attitude_ekf.h"
+#include "flight_loop.h"
 
 /**
- * MPU6050 driver and attitude estimation.
+ * MPU6050 driver.
  *
  * This is deliberately a thin layer: it owns the I2C transactions, the scaling
- * from raw counts to physical units, and the gyro calibration, and then hands
- * the numbers to AttitudeEKF. Every line of estimation maths lives in
- * attitude_ekf.h, which includes no Arduino header and is therefore covered by
- * the host tests in firmware/test and flown by the harness in firmware/sil.
+ * from raw counts to physical units, and the gyro calibration, and returns an
+ * ImuSample. It used to own the AttitudeEKF as well; that moved into
+ * FlightLoop (flight_loop.h) so the estimator the board runs is the same
+ * object the SIL and HIL builds step, rather than one reached through a
+ * driver the host cannot compile. Every line of estimation maths lives in
+ * attitude_ekf.h, which includes no Arduino header.
  *
  * Replaces the previous complementary filter. Two things were wrong with it
  * beyond the filter choice itself, and both are worth naming because the
@@ -61,8 +63,11 @@ public:
      * still. The EKF estimates bias in flight as well, but starting from a
      * measured offset means it begins near the answer rather than converging
      * through the first seconds of a flight.
+     *
+     * Returns the averaged accelerometer, in g, for seeding the estimator: it
+     * is far quieter than any single sample.
      */
-    void calibrate(int samples = 500) {
+    void calibrate(float& ax_mean, float& ay_mean, float& az_mean, int samples = 500) {
         long sum_gx = 0, sum_gy = 0, sum_gz = 0;
         long sum_ax = 0, sum_ay = 0, sum_az = 0;
         for (int i = 0; i < samples; ++i) {
@@ -76,56 +81,33 @@ public:
         gyro_offset_y_ = (float)sum_gy / samples;
         gyro_offset_z_ = (float)sum_gz / samples;
 
-        // Seed attitude from the averaged accelerometer, which is far quieter
-        // than any single sample.
-        ekf_.reset();
-        ekf_.initializeFromAccel((float)sum_ax / samples / 4096.0f,
-                                 (float)sum_ay / samples / 4096.0f,
-                                 (float)sum_az / samples / 4096.0f);
+        ax_mean = (float)sum_ax / samples / kLsbPerG;
+        ay_mean = (float)sum_ay / samples / kLsbPerG;
+        az_mean = (float)sum_az / samples / kLsbPerG;
     }
 
-    /** One sensor read plus one estimator step. */
-    void update(float dt) {
+    /** One sensor read, scaled and offset corrected. */
+    void read(ImuSample& out) {
         int16_t ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw;
         readRaw(ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw);
 
-        constexpr float kLsbPerDegPerSec = 65.5f;
-        constexpr float kLsbPerG = 4096.0f;
         constexpr float kDegToRad = 0.01745329252f;
-
-        p_ = (gx_raw - gyro_offset_x_) / kLsbPerDegPerSec * kDegToRad;
-        q_ = (gy_raw - gyro_offset_y_) / kLsbPerDegPerSec * kDegToRad;
-        r_ = (gz_raw - gyro_offset_z_) / kLsbPerDegPerSec * kDegToRad;
-
-        const float ax = ax_raw / kLsbPerG;
-        const float ay = ay_raw / kLsbPerG;
-        const float az = az_raw / kLsbPerG;
-
-        ekf_.predict(p_, q_, r_, dt);
-        ekf_.updateAccel(ax, ay, az);
+        out.p = (gx_raw - gyro_offset_x_) / kLsbPerDegPerSec * kDegToRad;
+        out.q = (gy_raw - gyro_offset_y_) / kLsbPerDegPerSec * kDegToRad;
+        out.r = (gz_raw - gyro_offset_z_) / kLsbPerDegPerSec * kDegToRad;
+        out.ax = ax_raw / kLsbPerG;
+        out.ay = ay_raw / kLsbPerG;
+        out.az = az_raw / kLsbPerG;
+        // A short I2C read leaves every raw value at zero. The EKF skips a
+        // zero-length accelerometer vector rather than dividing by it, so a
+        // dropped transaction costs one update instead of corrupting the
+        // filter.
     }
 
-    float getRoll() const { return ekf_.getRollDeg(); }
-    float getPitch() const { return ekf_.getPitchDeg(); }
-    /** Yaw rate in deg/s, straight off the gyro. Yaw is flown as a rate. */
-    float getYawRate() const { return r_ * 57.2957795f; }
-
-    float getBiasP() const { return ekf_.getBiasP(); }
-    float getBiasQ() const { return ekf_.getBiasQ(); }
-    float getRollSigma() const { return ekf_.getRollSigma(); }
-    float getInnovation(int axis) const { return ekf_.getInnovation(axis); }
-
-    /**
-     * True when the estimator has gone non-finite. Wired straight into the
-     * flight state machine, which treats it as unrecoverable: if attitude is
-     * unknown then every motor command after this point is a guess.
-     */
-    bool isDiverged() const { return ekf_.isDiverged(); }
-
 private:
-    AttitudeEKF ekf_;
+    static constexpr float kLsbPerDegPerSec = 65.5f; // +-500 deg/s range
+    static constexpr float kLsbPerG = 4096.0f;        // +-8 g range
     float gyro_offset_x_ = 0, gyro_offset_y_ = 0, gyro_offset_z_ = 0;
-    float p_ = 0, q_ = 0, r_ = 0; // bias-corrected body rates, rad/s
 
     void writeReg(uint8_t reg, uint8_t value) {
         Wire.beginTransmission(MPU6050_ADDRESS);

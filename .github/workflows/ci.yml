@@ -36,12 +36,31 @@ jobs:
       - name: Monte Carlo robustness
         working-directory: firmware/sil
         run: make monte-carlo
+      # Every scenario again, through the MAVLink HIL_SENSOR and
+      # HIL_ACTUATOR_CONTROLS bytes the HIL firmware exchanges with a
+      # simulator. This is what found the in-flight motor cut on signal loss.
+      - name: HIL loopback
+        working-directory: firmware/sil
+        run: make hil-loopback
+      # pymavlink is an independent MAVLink implementation. It reads back
+      # every frame of telemetry the SIL wrote, and encodes frames our parser
+      # has to decode field for field.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: MAVLink cross-check against pymavlink
+        run: |
+          python -m pip install --quiet pymavlink
+          python tools/mavlink_crosscheck.py firmware/sil/logs
       - name: Upload flight logs
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: sil-flight-logs
-          path: firmware/sil/logs/*.csv
+          path: |
+            firmware/sil/logs/*.csv
+            firmware/sil/logs/*.tlog
           if-no-files-found: warn
 
   # Model in the loop, and the check that it still agrees with the flight code.
@@ -121,3 +140,91 @@ jobs:
       # result that changes when the timestep changes.
       - name: Flight check
         run: npm run check
+      # The simulator's HIL session against the firmware's HIL loop, with the
+      # SIL binary standing in for the board over a pipe.
+      - name: Build the virtual HIL board
+        run: make -C ../firmware/sil sil_flight
+      - name: HIL check
+        run: npm run hil-check
+
+  groundstation:
+    name: Ground station (Go)
+    runs-on: ubuntu-latest
+    needs: host-tests
+    defaults:
+      run:
+        working-directory: groundstation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: false # standard library only, nothing to cache
+      - name: Format
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -count=1 ./...
+      # A third reader of the firmware's telemetry, after pymavlink and the
+      # firmware's own parser: every log the SIL writes must replay cleanly.
+      - name: Replay every SIL log
+        run: |
+          make -C ../firmware/sil run
+          go build -o /tmp/groundstation ./cmd/groundstation
+          for f in ../firmware/sil/logs/*.tlog; do
+            /tmp/groundstation -replay "$f" -check > /dev/null || exit 1
+            echo "ok $f"
+          done
+      - name: Container image
+        run: docker build -t dronectrl-groundstation:ci .
+      - name: Save image for the cluster job
+        run: docker save dronectrl-groundstation:ci -o /tmp/groundstation-image.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: groundstation-image
+          path: /tmp/groundstation-image.tar
+          retention-days: 1
+
+  # Deploys the demo overlay into a throwaway kind cluster and checks the pod
+  # comes up ready under the restricted Pod Security Standard and serves a
+  # vehicle. Schema validation alone would not catch a probe that never
+  # passes or a security context the image cannot run under.
+  kubernetes:
+    name: Kubernetes (kind)
+    runs-on: ubuntu-latest
+    needs: groundstation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: groundstation-image
+          path: /tmp
+      - name: Create cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: dronectrl
+      - name: Load the image
+        run: |
+          docker load -i /tmp/groundstation-image.tar
+          kind load docker-image dronectrl-groundstation:ci --name dronectrl
+      - name: Deploy the demo overlay
+        working-directory: groundstation/deploy/k8s/overlays/demo
+        run: |
+          kustomize edit set image ghcr.io/khalednoaman/dronectrl-groundstation=dronectrl-groundstation:ci
+          kubectl apply -k .
+          kubectl -n dronectrl rollout status deploy/groundstation --timeout=120s
+      - name: Probe the service
+        run: |
+          kubectl -n dronectrl port-forward svc/groundstation 8080:80 &
+          sleep 15
+          curl -sf localhost:8080/readyz
+          curl -sf localhost:8080/api/vehicles/1 | tee /tmp/vehicle.json
+          python3 -c "import json; v=json.load(open('/tmp/vehicle.json')); assert v['connected'], v"
+          curl -sf localhost:8080/metrics | grep 'dronectrl_vehicle_connected{system="1"} 1'
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n dronectrl get all
+          kubectl -n dronectrl describe pods
+          kubectl -n dronectrl logs deploy/groundstation --tail=100
