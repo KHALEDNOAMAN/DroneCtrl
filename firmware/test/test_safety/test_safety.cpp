@@ -77,6 +77,18 @@ void test_cannot_arm_with_throttle_up() {
     TEST_ASSERT_EQUAL(FlightState::DISARMED, fsm.state());
 }
 
+/**
+ * One healthy ARMED step at a throttle. Signal-loss tests fly one of these
+ * first, because a failsafe descent starts from the last healthy throttle,
+ * not from what a dead receiver reports.
+ */
+static void flyHealthy(FlightStateMachine& fsm, uint32_t& now, float throttle) {
+    FlightInputs in;
+    in.throttle_norm = throttle;
+    now += 4;
+    fsm.update(in, now, kDt);
+}
+
 static void armIt(FlightStateMachine& fsm, uint32_t& now) {
     FlightInputs in;
     in.yaw_norm = 1.0f;
@@ -93,12 +105,56 @@ void test_signal_loss_lands_rather_than_cutting() {
     FlightInputs in;
     in.throttle_norm = 0.6f;
     in.signal_lost = true;
+    flyHealthy(fsm, now, in.throttle_norm);
     now += 4;
     fsm.update(in, now, kDt);
 
     TEST_ASSERT_EQUAL(FlightState::FAILSAFE_LAND, fsm.state());
     TEST_ASSERT_EQUAL(FaultCause::SIGNAL_LOST, fsm.fault());
     TEST_ASSERT_TRUE(fsm.motorsEnabled()); // still flying it down
+}
+
+/**
+ * Regression: losing the link in flight must fly the airframe down, with the
+ * inputs a real receiver produces. receiver.h reports zero throttle together
+ * with signal_lost, so a descent started from the current throttle began at
+ * zero and cut the motors in the air on the very next step.
+ */
+void test_signal_loss_from_real_receiver_still_lands() {
+    FlightStateMachine fsm;
+    uint32_t now = 1000;
+    armIt(fsm, now);
+    for (int i = 0; i < 250; ++i) flyHealthy(fsm, now, 0.4f); // a second of hover
+
+    FlightInputs lost;          // exactly what RcDecoder reports
+    lost.throttle_norm = 0.0f;
+    lost.signal_lost = true;
+    now += 4;
+    fsm.update(lost, now, kDt);
+    TEST_ASSERT_EQUAL(FlightState::FAILSAFE_LAND, fsm.state());
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 0.4f, fsm.commandedThrottle());
+
+    // And it keeps descending rather than cutting, for at least a second.
+    for (int i = 0; i < 250; ++i) {
+        now += 4;
+        fsm.update(lost, now, kDt);
+    }
+    TEST_ASSERT_EQUAL(FlightState::FAILSAFE_LAND, fsm.state());
+    TEST_ASSERT_TRUE(fsm.commandedThrottle() > 0.2f);
+}
+
+/** Armed but still on the ground at idle: a dead link there may cut at once. */
+void test_signal_loss_at_idle_cuts() {
+    FlightStateMachine fsm;
+    uint32_t now = 1000;
+    armIt(fsm, now);
+    FlightInputs lost;
+    lost.signal_lost = true;
+    now += 4;
+    fsm.update(lost, now, kDt);
+    now += 4;
+    fsm.update(lost, now, kDt);
+    TEST_ASSERT_EQUAL(FlightState::FAILSAFE_CUT, fsm.state());
 }
 
 /** The landing ramp must reach zero and then cut, monotonically. */
@@ -110,6 +166,7 @@ void test_failsafe_land_ramps_down_monotonically() {
     FlightInputs in;
     in.throttle_norm = 0.6f;
     in.signal_lost = true;
+    flyHealthy(fsm, now, in.throttle_norm);
     now += 4;
     fsm.update(in, now, kDt);
 
@@ -189,6 +246,7 @@ void test_most_severe_fault_wins() {
     FlightInputs in;
     in.throttle_norm = 0.6f;
     in.signal_lost = true;
+    flyHealthy(fsm, now, in.throttle_norm);
     in.roll_deg = 80.0f;
     now += 4;
     fsm.update(in, now, kDt);
@@ -209,6 +267,7 @@ void test_failsafe_latches_when_fault_clears() {
     FlightInputs lost;
     lost.throttle_norm = 0.6f;
     lost.signal_lost = true;
+    flyHealthy(fsm, now, lost.throttle_norm);
     now += 4;
     fsm.update(lost, now, kDt);
     TEST_ASSERT_EQUAL(FlightState::FAILSAFE_LAND, fsm.state());
@@ -229,6 +288,7 @@ void test_failsafe_clear_refused_under_power() {
     FlightInputs lost;
     lost.throttle_norm = 0.6f;
     lost.signal_lost = true;
+    flyHealthy(fsm, now, lost.throttle_norm);
     now += 4;
     fsm.update(lost, now, kDt);
 
@@ -250,6 +310,7 @@ void test_failsafe_clear_refused_while_fault_present() {
     FlightInputs lost;
     lost.throttle_norm = 0.6f;
     lost.signal_lost = true;
+    flyHealthy(fsm, now, lost.throttle_norm);
     now += 4;
     fsm.update(lost, now, kDt);
 
@@ -369,6 +430,8 @@ int main(int, char**) {
     RUN_TEST(test_arming_aborts_when_gesture_released);
     RUN_TEST(test_cannot_arm_with_throttle_up);
     RUN_TEST(test_signal_loss_lands_rather_than_cutting);
+    RUN_TEST(test_signal_loss_from_real_receiver_still_lands);
+    RUN_TEST(test_signal_loss_at_idle_cuts);
     RUN_TEST(test_failsafe_land_ramps_down_monotonically);
     RUN_TEST(test_excessive_tilt_cuts_immediately);
     RUN_TEST(test_estimator_divergence_cuts_immediately);

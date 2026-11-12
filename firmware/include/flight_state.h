@@ -113,6 +113,7 @@ public:
         has_gesture_start_ = false;
         commanded_throttle_ = 0.0f;
         land_throttle_ = 0.0f;
+        last_healthy_throttle_ = 0.0f;
     }
 
     /**
@@ -149,6 +150,7 @@ public:
 
             case FlightState::ARMED:
                 commanded_throttle_ = in.throttle_norm;
+                last_healthy_throttle_ = in.throttle_norm;
                 stepDisarmGesture(in, now_ms);
                 break;
 
@@ -191,6 +193,8 @@ private:
     bool has_gesture_start_ = false;
     float commanded_throttle_ = 0.0f;
     float land_throttle_ = 0.0f;
+    /** Pilot throttle on the last ARMED step with no fault, see enterFailsafe. */
+    float last_healthy_throttle_ = 0.0f;
 
     FaultCause classify(const FlightInputs& in) const {
         // Ordered most severe first, so a tumbling airframe with a dead link is
@@ -227,7 +231,20 @@ private:
         if (state_ == FlightState::ARMED) {
             state_ = FlightState::FAILSAFE_LAND;
             fault_ = cause;
-            land_throttle_ = in.throttle_norm;
+            // Where the descent starts from. On a dead link the receiver's own
+            // throttle is not a pilot input any more: receiver.h, like every
+            // RC receiver driver, reports zero throttle together with
+            // signal_lost. Starting the ramp there meant it was already at
+            // zero, so the next step went straight to FAILSAFE_CUT and the
+            // motors stopped in the air, the exact outcome FAILSAFE_LAND
+            // exists to prevent. The SIL never showed it because its scripted
+            // signal loss kept hover throttle; the HIL loopback, which loses
+            // the link the way a real one is lost, did. So on signal loss the
+            // ramp starts from the last throttle the pilot commanded while
+            // the link was healthy. Low battery leaves the link intact, and
+            // the current stick is still the pilot's.
+            land_throttle_ = (cause == FaultCause::SIGNAL_LOST) ? last_healthy_throttle_
+                                                                : in.throttle_norm;
         }
         // Already landing: keep the first cause, a second recoverable fault
         // changes nothing about what the airframe should now do.
