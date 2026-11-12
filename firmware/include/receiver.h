@@ -1,6 +1,12 @@
 #pragma once
 #include <Arduino.h>
 #include "config.h"
+// The edge decoder runs inside the pin interrupt, so on the ESP32 it has to
+// live in IRAM like the handler that calls it. rc_pulse.h stays Arduino free
+// and only takes the attribute it is given.
+#if defined(ARDUINO_ARCH_ESP32)
+#define RC_PULSE_ISR_ATTR IRAM_ATTR
+#endif
 #include "rc_pulse.h"
 
 /**
@@ -22,6 +28,11 @@
  *        against the previous port state to find which pins moved.
  */
 
+#if defined(ARDUINO_ARCH_ESP32)
+#include "soc/gpio_reg.h"
+#include "soc/soc.h"
+#endif
+
 // File-scope statics rather than C++17 inline variables: the AVR toolchain
 // builds as C++11, and main.cpp is the only translation unit that includes
 // this header, so there is exactly one copy of each.
@@ -31,14 +42,33 @@ static RcPulseChannel channels[4];
 #if defined(ARDUINO_ARCH_ESP32)
 static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 
-template <int Ch, uint8_t Pin>
-void IRAM_ATTR onEdge() {
+/**
+ * Pin level straight from the GPIO input registers. digitalRead() is not
+ * guaranteed to be in IRAM on arduino-esp32 3.x, and an interrupt handler
+ * that calls into flash crashes the first time the flash cache is busy.
+ */
+static inline bool IRAM_ATTR pinHigh(uint8_t pin) {
+    return pin < 32 ? ((REG_READ(GPIO_IN_REG) >> pin) & 1u) != 0
+                    : ((REG_READ(GPIO_IN1_REG) >> (pin - 32)) & 1u) != 0;
+}
+
+static void IRAM_ATTR onEdge(int ch, uint8_t pin) {
     const uint32_t now = micros();
-    const bool high = digitalRead(Pin) == HIGH;
+    const bool high = pinHigh(pin);
     portENTER_CRITICAL_ISR(&mux);
-    channels[Ch].edge(high, now);
+    channels[ch].edge(high, now);
     portEXIT_CRITICAL_ISR(&mux);
 }
+
+// Four plain functions rather than one template. IRAM_ATTR names its section
+// from __COUNTER__ at the point it is written, so every instantiation of a
+// template shares one section, and the Xtensa linker then places their
+// literal pools after the code that loads them ("dangerous relocation: l32r:
+// literal placed after use").
+static void IRAM_ATTR onRoll() { onEdge(0, PIN_RX_ROLL); }
+static void IRAM_ATTR onPitch() { onEdge(1, PIN_RX_PITCH); }
+static void IRAM_ATTR onThrottle() { onEdge(2, PIN_RX_THROTTLE); }
+static void IRAM_ATTR onYaw() { onEdge(3, PIN_RX_YAW); }
 #endif
 } // namespace rx_isr
 
@@ -80,10 +110,10 @@ public:
         pinMode(PIN_RX_YAW, INPUT);
 
 #if defined(ARDUINO_ARCH_ESP32)
-        attachInterrupt(digitalPinToInterrupt(PIN_RX_ROLL), rx_isr::onEdge<0, PIN_RX_ROLL>, CHANGE);
-        attachInterrupt(digitalPinToInterrupt(PIN_RX_PITCH), rx_isr::onEdge<1, PIN_RX_PITCH>, CHANGE);
-        attachInterrupt(digitalPinToInterrupt(PIN_RX_THROTTLE), rx_isr::onEdge<2, PIN_RX_THROTTLE>, CHANGE);
-        attachInterrupt(digitalPinToInterrupt(PIN_RX_YAW), rx_isr::onEdge<3, PIN_RX_YAW>, CHANGE);
+        attachInterrupt(digitalPinToInterrupt(PIN_RX_ROLL), rx_isr::onRoll, CHANGE);
+        attachInterrupt(digitalPinToInterrupt(PIN_RX_PITCH), rx_isr::onPitch, CHANGE);
+        attachInterrupt(digitalPinToInterrupt(PIN_RX_THROTTLE), rx_isr::onThrottle, CHANGE);
+        attachInterrupt(digitalPinToInterrupt(PIN_RX_YAW), rx_isr::onYaw, CHANGE);
 #elif defined(ARDUINO_ARCH_AVR)
         noInterrupts();
         rx_isr::prev_pind = PIND;

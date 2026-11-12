@@ -2,6 +2,12 @@
 
 #include <stdint.h>
 
+/** Placement for the interrupt-side code; receiver.h sets it to IRAM_ATTR on
+ *  the ESP32. Empty on the host and the AVR. */
+#ifndef RC_PULSE_ISR_ATTR
+#define RC_PULSE_ISR_ATTR
+#endif
+
 /**
  * RC PWM decoding from pin edges, with no hardware dependency.
  *
@@ -30,7 +36,7 @@ public:
     static constexpr uint16_t kMaxUs = 2100;
 
     /** Call from the pin interrupt with the new pin level and micros(). */
-    void edge(bool high, uint32_t now_us) {
+    RC_PULSE_ISR_ATTR void edge(bool high, uint32_t now_us) {
         if (high) {
             rise_us_ = now_us;
             have_rise_ = true;
