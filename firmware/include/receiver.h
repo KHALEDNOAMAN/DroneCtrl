@@ -1,11 +1,14 @@
 #pragma once
 #include <Arduino.h>
 #include "config.h"
-// The edge decoder runs inside the pin interrupt, so on the ESP32 it has to
-// live in IRAM like the handler that calls it. rc_pulse.h stays Arduino free
-// and only takes the attribute it is given.
+// The edge decoder runs inside the pin interrupt, so on the ESP32 its code
+// has to be in IRAM with the handler. It is forced inline into the handler
+// rather than given an IRAM section of its own: an inline member function
+// with a section attribute is emitted as a COMDAT, and the Xtensa linker
+// places its literal pool after the code that loads it. rc_pulse.h stays
+// Arduino free and only takes the attribute it is given.
 #if defined(ARDUINO_ARCH_ESP32)
-#define RC_PULSE_ISR_ATTR IRAM_ATTR
+#define RC_PULSE_ISR_ATTR __attribute__((always_inline))
 #endif
 #include "rc_pulse.h"
 

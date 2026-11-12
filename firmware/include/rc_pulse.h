@@ -2,8 +2,8 @@
 
 #include <stdint.h>
 
-/** Placement for the interrupt-side code; receiver.h sets it to IRAM_ATTR on
- *  the ESP32. Empty on the host and the AVR. */
+/** Attribute for the interrupt-side code; receiver.h forces it inline into
+ *  the IRAM handler on the ESP32. Empty on the host and the AVR. */
 #ifndef RC_PULSE_ISR_ATTR
 #define RC_PULSE_ISR_ATTR
 #endif
