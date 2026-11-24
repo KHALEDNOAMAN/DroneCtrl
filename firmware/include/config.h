@@ -11,7 +11,8 @@
 // core's own constants, so they are guarded and simply absent on the host,
 // where there are no pins to assign.
 
-// Loop timing
+// Loop timing. firmware/include/loop_timing.h measures what the loop actually
+// achieves against this, and reports it over MAVLink (docs/mavlink.md).
 constexpr float LOOP_FREQUENCY_HZ = 250.0f;
 constexpr float DT = 1.0f / LOOP_FREQUENCY_HZ;
 constexpr uint32_t LOOP_INTERVAL_US = 1000000 / LOOP_FREQUENCY_HZ;
@@ -19,7 +20,28 @@ constexpr uint32_t LOOP_INTERVAL_US = 1000000 / LOOP_FREQUENCY_HZ;
 // I2C Config
 constexpr uint8_t MPU6050_ADDRESS = 0x68;
 
-#if defined(ARDUINO)
+#if defined(ARDUINO_ARCH_ESP32)
+// ESP32 DevKit. These cannot be the Nano's numbers: GPIO 6 to 11 are wired to
+// the module's SPI flash, so the Nano map (motors on 6 and 9, receiver on 7
+// and 8) would stop the chip executing the moment a pin was reconfigured.
+// Motors on four LEDC capable outputs, the receiver on input pins with no
+// strapping role at boot, the battery on ADC1 so it still reads with Wi-Fi on.
+constexpr uint8_t PIN_MOTOR_FL = 25;
+constexpr uint8_t PIN_MOTOR_FR = 26;
+constexpr uint8_t PIN_MOTOR_BL = 27;
+constexpr uint8_t PIN_MOTOR_BR = 14;
+
+constexpr uint8_t PIN_RX_ROLL = 34;     // input only
+constexpr uint8_t PIN_RX_PITCH = 35;    // input only
+constexpr uint8_t PIN_RX_THROTTLE = 32;
+constexpr uint8_t PIN_RX_YAW = 33;
+
+constexpr uint8_t PIN_BATTERY = 36;     // VP, ADC1 channel 0
+
+// 12 bit ADC, about 3.3 V full scale at the default 11 dB attenuation.
+constexpr float ADC_FULL_SCALE_VOLTS = 3.3f;
+constexpr float ADC_MAX_COUNTS = 4095.0f;
+#elif defined(ARDUINO)
 // Motor Pins (X-config)
 constexpr uint8_t PIN_MOTOR_FL = 3;  // Front Left (D3)
 constexpr uint8_t PIN_MOTOR_FR = 5;  // Front Right (D5)
@@ -35,7 +57,15 @@ constexpr uint8_t PIN_RX_YAW = 8;    // CH4 (D8)
 // Battery Pin. A0 comes from the Arduino core, which is why this block is
 // guarded: the host build has no such symbol and no pins to name.
 constexpr uint8_t PIN_BATTERY = A0;
+
+// 10 bit ADC against the 5 V supply.
+constexpr float ADC_FULL_SCALE_VOLTS = 5.0f;
+constexpr float ADC_MAX_COUNTS = 1023.0f;
 #endif // ARDUINO
+
+// Battery divider, R1 = 10k over R2 = 2k. A full 3S pack at 12.6 V reads
+// 2.1 V at the pin, inside both boards' ADC range.
+constexpr float BATTERY_DIVIDER_RATIO = 6.0f;
 
 // PID gains.
 //

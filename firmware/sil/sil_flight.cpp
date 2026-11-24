@@ -17,9 +17,10 @@
  * change to the estimator or the mixer is felt here on the next build.
  *
  * This is SIL, not HIL: the control code is real and the plant is modelled.
- * Adding hardware in the loop means running this same loop on the board with
- * the sensor reads replaced by injected samples over the serial link, and the
- * seam for that is already here, in SensorSource.
+ * The HIL build (docs/hil.md) runs this same FlightLoop on the board with the
+ * sensor reads replaced by MAVLink HIL_SENSOR samples, and --hil-loopback
+ * below proves that path end to end without a board, by flying every scenario
+ * through the encoded byte stream instead of a function call.
  *
  * What the model covers, and what it does not
  * -------------------------------------------
@@ -47,6 +48,8 @@
  * against a plant that cannot exercise it.
  */
 
+#include <unistd.h> // read(), for --hil-board
+
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
@@ -55,15 +58,13 @@
 #include <string>
 #include <vector>
 
-#include "attitude_ekf.h"
-#include "pid_controller.h"
-#include "mixer_math.h"
-#include "flight_state.h"
-
-// config.h is Arduino-free apart from one uint32_t, so the harness can take the
-// real gains rather than a copy that drifts.
-#include <stdint.h>
-#include "config.h"
+// The control sequence itself, shared with firmware/src/main.cpp. config.h,
+// the EKF, the PIDs, the mixer and the state machine all come in through it,
+// so the harness takes the real gains rather than a copy that drifts.
+#include "flight_loop.h"
+#include "hil_link.h"
+#include "loop_timing.h"
+#include "mavlink_telemetry.h"
 
 namespace {
 
@@ -239,27 +240,18 @@ struct Sticks {
 
 // ----------------------------------------------------- the flight controller
 
-/**
- * The same sequence main.cpp runs, against the same headers.
- *
- * Keep this in step with firmware/src/main.cpp. The point of a SIL harness is
- * lost the moment the two orders of operations diverge.
- */
 /** The gains the firmware shipped with before they were derived from a plant. */
 struct LegacyGains {
     static constexpr float kp = 1.2f, ki = 0.04f, kd = 15.0f;
     static constexpr float yaw_kp = 2.0f, yaw_ki = 0.02f, yaw_kd = 0.0f;
 };
 
-struct Controller {
-    AttitudeEKF ekf;
-    // Straight from config.h, so the harness cannot silently test gains the
-    // firmware does not use.
-    PIDController<float> pid_roll{PID_ROLL_KP, PID_ROLL_KI, PID_ROLL_KD, 100.0f, 400.0f};
-    PIDController<float> pid_pitch{PID_PITCH_KP, PID_PITCH_KI, PID_PITCH_KD, 100.0f, 400.0f};
-    PIDController<float> pid_yaw{PID_YAW_KP, PID_YAW_KI, PID_YAW_KD, 100.0f, 400.0f};
-    FlightStateMachine fsm;
-
+/**
+ * The flight controller, which is FlightLoop from flight_loop.h: the same
+ * object main.cpp steps on the board. Nothing here restates the control
+ * sequence; this only adapts the harness's sensor and stick types to it.
+ */
+struct Controller : FlightLoop {
     /**
      * Swap in the pre-tuning gains. Kept so the regression that motivated the
      * retune stays reproducible rather than living only in a commit message,
@@ -271,58 +263,28 @@ struct Controller {
         pid_yaw.setGains(LegacyGains::yaw_kp, LegacyGains::yaw_ki, LegacyGains::yaw_kd);
     }
 
-    float out_roll = 0.0f, out_pitch = 0.0f, out_yaw = 0.0f;
-    bool authority_limited = false;
+    static ImuSample sample(float gx, float gy, float gz, float ax, float ay, float az) {
+        ImuSample s;
+        s.p = gx; s.q = gy; s.r = gz;
+        s.ax = ax; s.ay = ay; s.az = az;
+        return s;
+    }
+
+    static PilotInput pilot(const Sticks& sticks) {
+        PilotInput in;
+        in.throttle = sticks.throttle;
+        in.roll = sticks.roll;
+        in.pitch = sticks.pitch;
+        in.yaw = sticks.yaw;
+        in.signal_lost = sticks.signal_lost;
+        return in;
+    }
 
     void step(float gx, float gy, float gz, float ax, float ay, float az,
               const Sticks& sticks, float battery_v, uint32_t now_ms,
               float pwm_out[4]) {
-        ekf.predict(gx, gy, gz, kDt);
-        ekf.updateAccel(ax, ay, az);
-
-        FlightInputs in;
-        in.throttle_norm = sticks.throttle;
-        in.yaw_norm = sticks.yaw;
-        in.roll_deg = ekf.getRollDeg();
-        in.pitch_deg = ekf.getPitchDeg();
-        in.battery_volts = battery_v;
-        in.signal_lost = sticks.signal_lost;
-        in.estimator_diverged = ekf.isDiverged();
-        fsm.update(in, now_ms, kDt);
-
-        if (!fsm.motorsEnabled()) {
-            pid_roll.reset();
-            pid_pitch.reset();
-            pid_yaw.reset();
-            out_roll = out_pitch = out_yaw = 0.0f;
-            for (int i = 0; i < 4; ++i) pwm_out[i] = kEscMin;
-            return;
-        }
-
-        // In failsafe the pilot's sticks are gone, so hold level and let the
-        // state machine's throttle ramp fly it down.
-        const bool failsafe = (fsm.state() == FlightState::FAILSAFE_LAND);
-        const float sp_roll = failsafe ? 0.0f : sticks.roll * 30.0f;
-        const float sp_pitch = failsafe ? 0.0f : sticks.pitch * 30.0f;
-        const float sp_yaw_rate = failsafe ? 0.0f : sticks.yaw * 150.0f;
-
-        // Hold the integrators whenever the mixer could not deliver what was
-        // asked for last step, so they do not wind up against an actuator that
-        // is already at its limit.
-        const bool hold = authority_limited;
-
-        out_roll = pid_roll.compute(sp_roll, ekf.getRollDeg(), kDt, hold);
-        out_pitch = pid_pitch.compute(sp_pitch, ekf.getPitchDeg(), kDt, hold);
-        out_yaw = pid_yaw.compute(sp_yaw_rate, gz * kDeg, kDt, hold);
-
-        const float base = kEscIdle + fsm.commandedThrottle() * (kEscMax - kEscIdle);
-        const auto mix = mixer::mixX(base, out_pitch, out_roll, out_yaw, kEscMin, kEscMax);
-        authority_limited = mix.authority_limited;
-
-        pwm_out[0] = mix.fl;
-        pwm_out[1] = mix.fr;
-        pwm_out[2] = mix.bl;
-        pwm_out[3] = mix.br;
+        FlightLoop::step(sample(gx, gy, gz, ax, ay, az), pilot(sticks), battery_v,
+                         now_ms, pwm_out, kDt);
     }
 };
 
@@ -372,9 +334,58 @@ struct Scenario {
     bool legacy_gains = false;
 };
 
-Result run(const Scenario& sc) {
+/**
+ * How the controller is wired to the plant for a run.
+ *
+ *   DIRECT        a function call, as the harness has always done
+ *   HIL_LOOPBACK  through MAVLink bytes: the plant's IMU sample is encoded as
+ *                 HIL_SENSOR, the sticks as RC_CHANNELS_OVERRIDE, both pushed
+ *                 a byte at a time into the hil::Link the HIL firmware uses,
+ *                 and the reply decoded from HIL_ACTUATOR_CONTROLS bytes. If
+ *                 the frames, the unit conversions or the sign conventions
+ *                 are wrong, the scenarios fail here, without a board.
+ */
+enum class Wiring { DIRECT, HIL_LOOPBACK };
+
+/** What the simulator side of the HIL link sends for a set of sticks. */
+static mavlink::RcChannelsOverride rcFor(const Sticks& st) {
+    mavlink::RcChannelsOverride rc;
+    auto axis = [](float v) { return (uint16_t)lroundf(1500.0f + 500.0f * v); };
+    rc.chan[0] = axis(st.roll);
+    rc.chan[1] = axis(st.pitch);
+    rc.chan[2] = (uint16_t)lroundf(1000.0f + 1000.0f * st.throttle);
+    rc.chan[3] = axis(st.yaw);
+    rc.target_system = 1;
+    rc.target_component = 1;
+    return rc;
+}
+
+/** Appends one .tlog record: big endian microseconds, then the frame. */
+static void tlogAppend(std::vector<uint8_t>& out, uint64_t usec, const uint8_t* f, size_t n) {
+    uint8_t ts[8];
+    mavlink::tlogTimestamp(ts, usec);
+    out.insert(out.end(), ts, ts + 8);
+    out.insert(out.end(), f, f + n);
+}
+
+Result run(const Scenario& sc, Wiring wiring = Wiring::DIRECT,
+           std::vector<uint8_t>* tlog = nullptr) {
     Result res;
     res.name = sc.name;
+
+    // HIL loopback state: the board's end of the link, and the simulator's
+    // parser for what comes back.
+    hil::Link board_link;
+    mavlink::Parser sim_parser;
+    mavlink::Endpoint sim_ep;
+    sim_ep.system_id = 255; // a ground station or simulator, by convention
+    sim_ep.component_id = 190;
+    std::vector<uint8_t> board_tx;
+    uint32_t hil_replies = 0;
+
+    // Telemetry, built the way main.cpp builds it, timed on simulated time.
+    telemetry::Scheduler tlm;
+    LoopTiming timing(LOOP_INTERVAL_US);
 
     Plant plant;
     ImuModel imu;
@@ -432,8 +443,13 @@ Result run(const Scenario& sc) {
 
         // --- fault injection ----------------------------------------------
         if (sc.signal_loss_at >= 0.0f && t >= sc.signal_loss_at) {
+            // What receiver.h actually reports on a dead link: every axis
+            // centred and the throttle closed. The scenario used to keep
+            // hover throttle here, which no receiver does, and that is how a
+            // failsafe that cut the motors in the air passed for so long.
             sticks.signal_lost = true;
             sticks.roll = sticks.pitch = sticks.yaw = 0.0f;
+            sticks.throttle = 0.0f;
         }
         if (sc.motor_fail_at >= 0.0f && t >= sc.motor_fail_at) {
             plant.motor_health[sc.motor_fail_index] = sc.motor_fail_health;
@@ -448,7 +464,62 @@ Result run(const Scenario& sc) {
         // --- one control step ---------------------------------------------
         float gx, gy, gz, ax, ay, az;
         imu.sample(plant, rng, gx, gy, gz, ax, ay, az);
-        ctrl.step(gx, gy, gz, ax, ay, az, sticks, battery, now_ms, pwm);
+        const uint64_t sim_us = (uint64_t)now_ms * 1000u;
+        timing.markStart((uint32_t)sim_us);
+
+        if (wiring == Wiring::DIRECT) {
+            ctrl.step(gx, gy, gz, ax, ay, az, sticks, battery, now_ms, pwm);
+        } else {
+            // Simulator to board. A lost receiver is modelled the way it
+            // happens on the link: the overrides simply stop arriving.
+            uint8_t frame[mavlink::kMaxFrame];
+            if (!sticks.signal_lost) {
+                const size_t n = mavlink::encode(frame, sim_ep, rcFor(sticks));
+                for (size_t k = 0; k < n; ++k) board_link.push(frame[k], [](const ImuSample&, uint64_t) {});
+            }
+            const ImuSample sample = Controller::sample(gx, gy, gz, ax, ay, az);
+            const size_t n = mavlink::encode(frame, sim_ep, hil::toHilSensor(sample, sim_us));
+
+            // The board: exactly hilStep() in main.cpp. The battery is passed
+            // in directly, because HIL_SENSOR carries none and the low
+            // battery scenario still has to be flown.
+            board_tx.clear();
+            for (size_t k = 0; k < n; ++k) {
+                board_link.push(frame[k], [&](const ImuSample& in, uint64_t t_us) {
+                    float out[4];
+                    ctrl.FlightLoop::step(in, board_link.pilot(t_us), battery,
+                                          (uint32_t)(t_us / 1000), out, kDt);
+                    uint8_t reply[hil::Link::kActuatorFrame];
+                    const size_t m = board_link.encodeActuators(reply, out, t_us,
+                                                                ctrl.fsm.motorsEnabled());
+                    board_tx.insert(board_tx.end(), reply, reply + m);
+                });
+            }
+
+            // Board to simulator.
+            for (uint8_t b : board_tx) {
+                sim_parser.push(b, [&](const mavlink::Frame& f) {
+                    mavlink::HilActuatorControls ac;
+                    if (f.decode(ac)) {
+                        hil::pwmFromActuators(ac, pwm);
+                        ++hil_replies;
+                    }
+                });
+            }
+        }
+        timing.markEnd((uint32_t)sim_us);
+
+        if (tlog) {
+            telemetry::Snapshot snap = telemetry::snapshotOf(
+                ctrl, Controller::sample(gx, gy, gz, ax, ay, az), now_ms, battery);
+            snap.timing = timing.report();
+            snap.total_overruns = timing.totalOverruns();
+            snap.receiver_ok = !sticks.signal_lost;
+            tlm.poll(snap, [&](const uint8_t* f, size_t n) {
+                tlogAppend(*tlog, sim_us, f, n);
+                return true;
+            });
+        }
 
         // Wind acts on an airframe that is actually flying. Applying it while
         // the model is still sitting on the ground, where nothing holds it
@@ -500,6 +571,17 @@ Result run(const Scenario& sc) {
 
     // ------------------------------------------------------- pass criteria
     res.require(ever_armed, "never reached ARMED, the arming sequence did not complete");
+
+    if (wiring == Wiring::HIL_LOOPBACK) {
+        // Lockstep means exactly one reply per sample, and a clean link means
+        // no frame was rejected in either direction.
+        res.require(hil_replies == (uint32_t)steps,
+                    "HIL link did not answer every sensor sample");
+        res.require(board_link.stats().crc_errors == 0 && sim_parser.stats().crc_errors == 0,
+                    "HIL link rejected frames on a lossless channel");
+        res.require(board_link.stats().seq_gaps == 0 && sim_parser.stats().seq_gaps == 0,
+                    "HIL link reported sequence gaps on a lossless channel");
+    }
 
     if (sc.imu_corrupt_at >= 0.0f) {
         res.require(ctrl.fsm.state() == FlightState::FAILSAFE_CUT,
@@ -796,15 +878,139 @@ bool writeCsv(const Result& r, const std::string& dir) {
     return true;
 }
 
+/** The telemetry the board would have sent, in the .tlog format QGroundControl replays. */
+bool writeTlog(const std::vector<uint8_t>& data, const std::string& path) {
+    FILE* f = fopen(path.c_str(), "wb");
+    if (!f) {
+        std::printf("  could not write %s\n", path.c_str());
+        return false;
+    }
+    fwrite(data.data(), 1, data.size(), f);
+    fclose(f);
+    return true;
+}
+
+/**
+ * Fly every scenario twice, once wired directly and once through the HIL
+ * byte stream, and compare. They are not expected to be bit identical: the
+ * sticks are quantised to whole microseconds on the way through, and a lost
+ * receiver is noticed after the 500 ms override timeout rather than at once.
+ * They are expected to reach the same verdict, and to agree closely on
+ * attitude wherever the receiver stays up.
+ */
+int runHilLoopback(const std::vector<Scenario>& scenarios) {
+    std::printf("DroneCtrl HIL loopback\n");
+    std::printf("every scenario flown through MAVLink HIL_SENSOR / HIL_ACTUATOR_CONTROLS bytes\n\n");
+    std::printf("  %-22s %-8s %-8s %s\n", "scenario", "direct", "hil", "max roll difference");
+
+    int failed = 0;
+    for (const auto& sc : scenarios) {
+        const Result a = run(sc, Wiring::DIRECT);
+        const Result b = run(sc, Wiring::HIL_LOOPBACK);
+
+        const bool expect_pass = !sc.legacy_gains;
+        const bool a_ok = a.passed == expect_pass;
+        const bool b_ok = b.passed == expect_pass;
+
+        float max_diff = 0.0f;
+        const size_t n = a.log.size() < b.log.size() ? a.log.size() : b.log.size();
+        for (size_t i = 0; i < n; ++i) {
+            const float d = fabsf(a.log[i].roll_true - b.log[i].roll_true);
+            if (d > max_diff) max_diff = d;
+        }
+
+        // Where the link carries the same information, the flights must
+        // agree. Signal loss and the deliberately unstable legacy gains are
+        // excluded: the first is timed differently by design, and the second
+        // is chaotic, so any perturbation grows.
+        const bool comparable = sc.signal_loss_at < 0.0f && !sc.legacy_gains &&
+                                sc.imu_corrupt_at < 0.0f;
+        const bool agree = !comparable || max_diff < 0.5f;
+
+        const bool ok = a_ok && b_ok && agree;
+        std::printf("  %-22s %-8s %-8s %.4f deg%s%s\n", sc.name.c_str(),
+                    a_ok ? "pass" : "FAIL", b_ok ? "pass" : "FAIL", max_diff,
+                    comparable ? "" : "  (not compared)", agree ? "" : "  TOO LARGE");
+        if (!b_ok && expect_pass) {
+            for (const auto& f : b.failures) std::printf("      %s\n", f.c_str());
+        }
+        if (!ok) ++failed;
+    }
+    std::printf("\n%d of %d scenarios agree through the HIL link\n",
+                (int)scenarios.size() - failed, (int)scenarios.size());
+    return failed == 0 ? 0 : 1;
+}
+
+/**
+ * A virtual board: the HIL firmware's loop, with stdin and stdout standing in
+ * for the USB serial port. It does exactly what hilStep() in main.cpp does,
+ * including the telemetry the board sends alongside its replies, so a
+ * simulator can be developed and tested against the real controller without
+ * a board attached. The simulator's own CI drives it this way
+ * (simulator/tools/hil-check.mjs).
+ */
+int runHilBoard() {
+    hil::Link link;
+    FlightLoop flight;
+    flight.ekf.initializeFromAccel(0.0f, 0.0f, 1.0f);
+    telemetry::Rates rates;
+    rates.attitude_ms = 100;
+    telemetry::Scheduler tlm(rates);
+    std::vector<uint8_t> out;
+
+    auto step = [&](const ImuSample& sample, uint64_t sim_usec) {
+        const PilotInput pilot = link.pilot(sim_usec);
+        const uint32_t sim_ms = (uint32_t)(sim_usec / 1000);
+        float pwm[4];
+        flight.step(sample, pilot, 12.4f, sim_ms, pwm);
+        uint8_t frame[hil::Link::kActuatorFrame];
+        const size_t n = link.encodeActuators(frame, pwm, sim_usec, flight.fsm.motorsEnabled());
+        out.insert(out.end(), frame, frame + n);
+
+        telemetry::Snapshot snap = telemetry::snapshotOf(flight, sample, sim_ms, 12.4f);
+        snap.receiver_ok = !pilot.signal_lost;
+        snap.link_errors = link.stats().crc_errors;
+        snap.hil = true;
+        tlm.poll(snap, [&](const uint8_t* f, size_t m) {
+            out.insert(out.end(), f, f + m);
+            return true;
+        });
+    };
+
+    // read(), not fread(): fread waits to fill its buffer, and in lockstep
+    // the simulator sends one sample and then waits for the reply, so a
+    // buffered read deadlocks both ends.
+    uint8_t buf[512];
+    ssize_t got;
+    while ((got = read(0, buf, sizeof(buf))) > 0) {
+        for (ssize_t i = 0; i < got; ++i) link.push(buf[i], step);
+        if (!out.empty()) {
+            fwrite(out.data(), 1, out.size(), stdout);
+            fflush(stdout);
+            out.clear();
+        }
+    }
+    std::fprintf(stderr, "hil board: %u samples, %u crc errors, %u sequence gaps\n",
+                 (unsigned)link.sensorFrames(), (unsigned)link.stats().crc_errors,
+                 (unsigned)link.stats().seq_gaps);
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     std::string out_dir = "logs";
     int monte_carlo = 0;
+    bool hil_loopback = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--out") == 0 && i + 1 < argc) out_dir = argv[++i];
         else if (std::strcmp(argv[i], "--monte-carlo") == 0 && i + 1 < argc) {
             monte_carlo = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--hil-loopback") == 0) {
+            hil_loopback = true;
+        } else if (std::strcmp(argv[i], "--hil-board") == 0) {
+            // Binary on stdout: nothing else may be printed there.
+            return runHilBoard();
         }
     }
 
@@ -880,13 +1086,17 @@ int main(int argc, char** argv) {
         scenarios.push_back(s);
     }
 
+    if (hil_loopback) return runHilLoopback(scenarios);
+
     std::printf("DroneCtrl software-in-the-loop\n");
     std::printf("control loop 250 Hz, linking the firmware headers directly\n\n");
 
     int failed = 0;
     for (const auto& sc : scenarios) {
-        const Result r = run(sc);
+        std::vector<uint8_t> tlog;
+        const Result r = run(sc, Wiring::DIRECT, &tlog);
         writeCsv(r, out_dir);
+        writeTlog(tlog, out_dir + "/" + sc.name + ".tlog");
 
         // The legacy-gain run passes by failing. Asserting that keeps the
         // regression honest: if someone reintroduces those gains and the

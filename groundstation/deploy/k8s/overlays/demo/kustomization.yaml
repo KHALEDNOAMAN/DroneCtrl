@@ -1,0 +1,19 @@
+# A self-contained demo: instead of listening for a vehicle, the pod loops
+# the SIL signal-loss flight that ships inside the image, so the dashboard
+# and the metrics show a full arm, hover, failsafe and landing with nothing
+# else running.
+#
+#   kubectl apply -k groundstation/deploy/k8s/overlays/demo
+#   kubectl -n dronectrl port-forward svc/groundstation 8080:80
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - target:
+      kind: Deployment
+      name: groundstation
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/args
+        value: ["-replay", "/testdata/signal_loss.tlog", "-loop", "-speed", "1", "-http", ":8080"]

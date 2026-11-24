@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dronectrl
+  labels:
+    app.kubernetes.io/part-of: dronectrl
+    # Enforce the restricted Pod Security Standard. The deployment below
+    # already meets it; this makes the cluster refuse anything that does not.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

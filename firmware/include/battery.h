@@ -31,9 +31,12 @@ private:
     float voltage_ = 0;
 
     float readRawVoltage() {
-        // Voltage divider: R1=10k, R2=2k -> scaling factor 6.0
-        // ADC 5V ref, 10-bit
+        // The ADC's full scale and resolution differ between the boards (5 V
+        // and 10 bits on the Nano, about 3.3 V and 12 bits on the ESP32), so
+        // both come from config.h. Hard coding the Nano's made the ESP32 read
+        // roughly six times the real voltage, which is a low battery
+        // failsafe that could never fire.
         int val = analogRead(PIN_BATTERY);
-        return val * (5.0f / 1023.0f) * 6.0f; 
+        return val * (ADC_FULL_SCALE_VOLTS / ADC_MAX_COUNTS) * BATTERY_DIVIDER_RATIO;
     }
 };

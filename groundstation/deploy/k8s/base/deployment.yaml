@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: groundstation
+  namespace: dronectrl
+  labels:
+    app.kubernetes.io/name: groundstation
+    app.kubernetes.io/part-of: dronectrl
+spec:
+  # One replica on purpose. Vehicle state lives in memory and MAVLink over
+  # UDP has no session to pin a vehicle to a pod, so two replicas would each
+  # see half the frames and both report a lossy link. Recreate rather than
+  # RollingUpdate for the same reason: never two pods splitting one stream.
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: groundstation
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: groundstation
+        app.kubernetes.io/part-of: dronectrl
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: groundstation
+          image: ghcr.io/khalednoaman/dronectrl-groundstation:latest
+          imagePullPolicy: IfNotPresent
+          args: ["-udp", ":14550", "-http", ":8080"]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: mavlink
+              containerPort: 14550
+              protocol: UDP
+          # Liveness only asks whether the process answers. Readiness asks
+          # whether the telemetry socket is bound, so a pod that could not
+          # open its UDP port never receives dashboard traffic.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

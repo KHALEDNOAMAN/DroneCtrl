@@ -61,31 +61,40 @@ integrator spent the saturation winding up against a limit it could not see.
 
 ## The line through the middle
 
-`attitude_ekf.h`, `flight_state.h`, `pid_controller.h`, `mixer_math.h` and
-`can_telemetry.h` include no Arduino header. That is not tidiness. It is what
+`flight_loop.h`, `attitude_ekf.h`, `flight_state.h`, `pid_controller.h`,
+`mixer_math.h`, `can_telemetry.h` and the link layer (`mavlink_lite.h`,
+`mavlink_telemetry.h`, `hil_link.h`, `loop_timing.h`, `rc_pulse.h`) include
+no Arduino header. That is not tidiness. It is what
 allows three different harnesses to attach to the same source:
 
 ```mermaid
 flowchart LR
     SRC["<b>firmware/include</b><br/>estimator, control law,<br/>mixer, state machine"]
 
-    UT["<b>firmware/test</b><br/>53 unit tests<br/><i>g++, ~2 s</i>"]
+    UT["<b>firmware/test</b><br/>90 unit tests<br/><i>g++, ~3 s</i>"]
     SIL["<b>firmware/sil</b><br/>9 scenarios + 800 Monte Carlo<br/><i>rigid body plant</i>"]
     FW["<b>firmware/src</b><br/>main.cpp<br/><i>AVR and ESP32</i>"]
+    HIL["<b>esp32_hil</b><br/>same loop on the board<br/><i>MAVLink, lockstep</i>"]
 
     MIL["<b>matlab/</b><br/>independent model<br/><i>Octave</i>"]
+    SIM["<b>simulator/</b><br/>browser HIL session<br/><i>WebSerial</i>"]
+    GS["<b>groundstation/</b><br/>Go, MAVLink over UDP<br/><i>Kubernetes</i>"]
 
     SRC --> UT
     SRC --> SIL
     SRC --> FW
+    SRC --> HIL
     SIL <-->|"equivalence<br/>0.03 deg RMS"| MIL
+    SIL <-->|"loopback<br/>&lt; 0.0001 deg"| HIL
+    HIL <-->|"HIL_SENSOR /<br/>HIL_ACTUATOR_CONTROLS"| SIM
+    FW -->|"telemetry"| GS
 
     classDef src fill:#eff6ff,stroke:#2563eb,stroke-width:2px,color:#1e3a5f
     classDef test fill:#ecfdf5,stroke:#0d9488,color:#134e4a
     classDef flight fill:#fef3c7,stroke:#d97706,color:#78350f
     class SRC src
-    class UT,SIL,MIL test
-    class FW flight
+    class UT,SIL,MIL,SIM test
+    class FW,HIL,GS flight
 ```
 
 The tests and the simulator compile **the same file the aircraft runs**, not a
@@ -114,6 +123,13 @@ implementation is only worth having if something checks it against the first.
 | `battery.h` | ADC, divider scaling, filtering | yes |
 | `src/main.cpp` | wiring, and nothing else | yes |
 
+`flight_loop.h` is the control sequence itself (estimate, decide, control,
+mix), shared by `main.cpp`, the SIL harness and the HIL build, so there is one
+implementation of it rather than copies kept in step by comments.
+`mavlink_lite.h`, `mavlink_telemetry.h`, `hil_link.h`, `loop_timing.h` and
+`rc_pulse.h` are the link layer, loop timing and receiver decoding, all
+Arduino free and host tested. See [mavlink.md](mavlink.md) and [hil.md](hil.md).
+
 `main.cpp` being only wiring is a rule, not an observation. Logic that lands
 there is logic that cannot be tested without a board and a flight.
 
@@ -132,6 +148,16 @@ number and none of them silently:
 
 Loop timing uses unsigned subtraction on `micros()`, so the 71 minute rollover
 costs nothing.
+
+The rate is measured, not assumed: `loop_timing.h` records the period, its
+jitter and missed deadlines, and the board reports them over MAVLink. On the
+ESP32 the control step is a FreeRTOS task pinned to core 1 at the highest
+application priority, released every 4 ms by `vTaskDelayUntil`, so the period
+is held against the tick rather than drifting by the step's own duration, and
+telemetry runs at a lower priority where it cannot delay control. The Nano has
+no RTOS, so it polls `micros()` and advances by the nominal period rather than
+snapping to the current time, so one late cycle does not shift every later
+one.
 
 ## Where the numbers come from
 

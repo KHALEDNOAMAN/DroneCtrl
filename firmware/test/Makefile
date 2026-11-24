@@ -20,7 +20,7 @@ CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wpedantic -I../include -MMD -MP
 BUILD    := build
 
-SUITES := test_control test_estimation test_safety
+SUITES := test_control test_estimation test_safety test_telemetry
 BINS   := $(addprefix $(BUILD)/,$(SUITES))
 DEPS   := $(BINS:=.d)
 
@@ -40,7 +40,22 @@ $(foreach s,$(SUITES),$(eval $(call SUITE_RULE,$(s))))
 
 -include $(DEPS)
 
-run: $(BINS)
+# The headers the board compiles have to stay C++11: that is what the AVR
+# toolchain builds with. The suites themselves use C++17, so they cannot catch
+# a C++17 feature creeping into a flight header; this does, in under a second.
+BOARD_HEADERS := flight_loop.h attitude_ekf.h pid_controller.h mixer_math.h \
+                 flight_state.h mavlink_lite.h mavlink_telemetry.h loop_timing.h \
+                 rc_pulse.h hil_link.h can_telemetry.h config.h
+
+.PHONY: cxx11
+cxx11:
+	@for h in $(BOARD_HEADERS); do \
+		echo '#include "'$$h'"' | $(CXX) -std=c++11 -Wall -Wextra -Wpedantic -Werror \
+			-fsyntax-only -I../include -x c++ - || { echo "$$h is not C++11"; exit 1; }; \
+	done
+	@echo "board headers are C++11 clean"
+
+run: $(BINS) cxx11
 	@fail=0; \
 	for b in $(BINS); do \
 		./$$b || fail=1; \

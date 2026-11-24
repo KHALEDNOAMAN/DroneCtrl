@@ -32,8 +32,12 @@ The control, estimation and safety code carries no Arduino dependency, so the sa
 - ⚖️ **PID stabilization** (pitch, roll, yaw) with gains derived from a plant model, not guessed
 - 🔀 **Saturation-aware motor mixer** that sacrifices throttle rather than attitude authority
 - 🛡️ **Latching failsafe state machine** with a documented land-versus-cut policy per fault
-- 🧪 **53 host unit tests** on the exact flight headers, no board and no dependencies
+- 🧪 **90 host unit tests** on the exact flight headers, no board and no dependencies
 - ✈️ **Software-in-the-loop harness** flying 9 scenarios with injected faults, plus an 800-run Monte Carlo campaign
+- 🔁 **Hardware in the loop** over MAVLink: the ESP32 flies a simulated airframe from the browser over WebSerial, in lockstep, with a virtual board for CI
+- 📡 **MAVLink v2 telemetry** that QGroundControl reads, checked byte for byte against pymavlink
+- ⏱️ **Measured loop timing**: period jitter and missed deadlines reported from the board, a FreeRTOS control task on the ESP32
+- 🛰️ **Go ground station** with a live dashboard, Prometheus metrics and Kubernetes manifests, deployed to a kind cluster in CI
 - 🔌 **CAN telemetry frame encoding** with transfer counting and gap detection
 - 📈 **Flight log output and analysis plots**
 - 🗺️ **GPS waypoint navigation**
@@ -78,11 +82,15 @@ the tuning panel affects both.
 | **Modelling** | MATLAB and Octave, plant identification, pole placement |
 | **Verification** | Host unit tests, software-in-the-loop, MIL/SIL equivalence, fault injection, GitHub Actions |
 | **Simulator & HUD** | TypeScript, React, Three.js (@react-three/fiber, @react-three/drei), WebGL |
+| **Telemetry & HIL** | MAVLink v2, WebSerial, FreeRTOS, pymavlink cross-check |
+| **Ground station** | Go (standard library only), Server-Sent Events, Prometheus, Docker, Kubernetes, kind |
 
 ## ⚙️ How It Works
 
 ### Flight Controller Loop
-A fixed 250 Hz loop, in four steps: read the IMU and step the estimator, feed the estimate and the receiver into the flight state machine, run the attitude PIDs if and only if that machine allows it, then mix to four ESC outputs. `main.cpp` is wiring and nothing else, because logic that lands there is logic that cannot be tested without a board and a flight.
+A fixed 250 Hz loop, in four steps: read the IMU and step the estimator, feed the estimate and the receiver into the flight state machine, run the attitude PIDs if and only if that machine allows it, then mix to four ESC outputs. The sequence lives once, in `flight_loop.h`, and the board, the SIL harness and the HIL build all call it. `main.cpp` is wiring and nothing else, because logic that lands there is logic that cannot be tested without a board and a flight.
+
+On the ESP32 the step is a FreeRTOS task released every 4 ms by `vTaskDelayUntil`, at a higher priority than telemetry. On both boards `loop_timing.h` measures the period actually achieved and the board reports its jitter and missed deadlines over MAVLink. That measurement is why the receiver was rewritten: four sequential `pulseIn()` calls block for most of a 20 ms receiver frame, so the old loop could not have run at 250 Hz. It now decodes edges in pin interrupts.
 
 ### State Estimation
 A four-state extended Kalman filter estimates roll, pitch and the gyro's two horizontal bias terms. The accelerometer is used as an observation of the gravity vector rather than pre-converted into angles, and `R` is inflated in proportion to how far the measured magnitude departs from 1 g, so a manoeuvring airframe de-weights the update instead of reading its own acceleration as tilt.
@@ -110,7 +118,7 @@ A latching state machine with an explicit policy per fault, rather than an impli
 
 | Fault | Response | Why |
 | :--- | :--- | :--- |
-| Signal loss | controlled descent | still controllable and still knows its attitude |
+| Signal loss | controlled descent from the last healthy throttle | still controllable and still knows its attitude |
 | Low battery | controlled descent | known in advance; the remaining charge is for this |
 | Excessive tilt | cut power | past this angle the controller cannot recover it |
 | Estimator diverged | cut power | attitude unknown, so every command is a guess |
@@ -122,11 +130,15 @@ Failsafes latch. A receiver that recovers mid-descent does not silently hand con
 ## 🧪 Verification
 
 ```bash
-cd firmware/test && make run              # 53 unit tests, ~2 s, no dependencies
+cd firmware/test && make run              # 90 unit tests, ~3 s, no dependencies
 cd firmware/sil  && make run              # 9 SIL scenarios with fault injection, ~3 s
-cd firmware/sil  && make monte-carlo     # 800 randomised airframes against fixed gains
+cd firmware/sil  && make monte-carlo      # 800 randomised airframes against fixed gains
+cd firmware/sil  && make hil-loopback     # every scenario again, through the HIL MAVLink link
+python3 tools/mavlink_crosscheck.py       # telemetry against pymavlink, both directions
+cd simulator     && npm run hil-check     # browser HIL session against the firmware loop
+cd groundstation && go test -race ./...   # ground station
 cd matlab && octave-cli verify_mil_sil.m  # MATLAB model against the C++ flight code
-cd firmware      && pio run               # both target builds
+cd firmware      && pio run               # nano, esp32 and esp32_hil builds
 ```
 
 The control, estimation and safety headers carry no Arduino dependency, so the tests and the simulator link the same source the flight controller runs. A control law verified in a separate implementation has only been verified as a separate implementation.
@@ -168,7 +180,15 @@ Below half the design gain, which in practice means an airframe with three to fi
 
 CI fails the campaign below 90 percent, so a change that narrows the envelope is caught even when every named scenario still passes.
 
-Hardware in the loop is not built yet. The seam for it is in place, and saying what is missing seems more useful than implying it is there.
+### Hardware in the loop
+
+The ESP32 runs the real flight loop while a simulator owns its IMU and motors, over MAVLink (`HIL_SENSOR` in, `HIL_ACTUATOR_CONTROLS` out) in lockstep. Flash `pio run -e esp32_hil`, open the simulator in Chrome, and press **Connect ESP32**. The board flies a port of the SIL airframe, the one its gains were derived for, and the 3D scene draws it. With no board, `sil_flight --hil-board` stands in for one over a pipe, which is how CI tests the browser side. Details: [docs/hil.md](docs/hil.md).
+
+**HIL found a real defect: losing the receiver in flight cut the motors instead of landing.** The state machine started its descent from the throttle on the failing step, and every receiver driver reports zero throttle with a lost signal, so the descent began at zero and went straight to a cut. The unit tests and the SIL scenario had both kept hover throttle on the lost step, which no receiver does. The HIL link loses the signal the way a real one is lost, and that exposed it. Fixed in `flight_state.h`, with a regression test that uses exactly the receiver's inputs; the full account is in [docs/verification.md](docs/verification.md#what-hil-found).
+
+### Telemetry and the ground station
+
+The board speaks MAVLink v2, so QGroundControl shows it as a quadrotor with attitude, battery and armed state ([docs/mavlink.md](docs/mavlink.md)). Every SIL scenario also writes the telemetry the board would have sent as a `.tlog`. [`groundstation/`](groundstation/) is a Go service that receives it over UDP, or replays a `.tlog`, and serves a live dashboard, JSON, Server-Sent Events and Prometheus metrics. It ships as a distroless container with Kubernetes manifests for the restricted Pod Security Standard, and CI deploys it to a kind cluster and checks it serves a vehicle.
 
 ### Model in the loop
 
@@ -188,7 +208,7 @@ Details of the rest, including the defect the unit tests found on their first ru
 
 ### Hardware Setup
 1. Connect the ESP32 to the MPU6050 IMU via I2C.
-2. Wire the 4 ESC signal lines to the designated ESP32 PWM pins.
+2. Wire the 4 ESC signal lines to the ESP32 pins in [docs/wiring_diagram.md](docs/wiring_diagram.md#esp32-devkit-pins) (not the Nano's: GPIO 6 to 11 are the ESP32's flash).
 3. Ensure proper power distribution and grounding.
 
 ### Firmware Flash

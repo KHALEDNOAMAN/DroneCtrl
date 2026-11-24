@@ -10,14 +10,13 @@
 #include <Servo.h>
 #endif
 #include "config.h"
-#include "mixer_math.h"
 
 /**
  * The four ESC outputs.
  *
  * All the arithmetic lives in mixer_math.h, which has no Arduino dependency
- * and is unit tested on the host. What is left here is the part that genuinely
- * needs hardware: four Servo objects and the decision to write them at all.
+ * and is unit tested on the host, and is called from FlightLoop. What is left
+ * here is the part that genuinely needs hardware: four Servo objects.
  */
 class MotorMixer {
 public:
@@ -33,29 +32,21 @@ public:
      *  the state machine says motors are not enabled. */
     void stop() {
         writeMotors(ESC_MIN, ESC_MIN, ESC_MIN, ESC_MIN);
-        authority_limited_ = false;
     }
 
     /**
-     * @param throttle_norm 0..1, already decided by the flight state machine
-     *        rather than taken straight from the stick, so a failsafe descent
-     *        arrives here as an ordinary throttle value.
+     * Write four ESC commands, FL FR BL BR, in microseconds. The mixing and
+     * the saturation handling happen in FlightLoop (via mixer_math.h), so the
+     * values arriving here are already the final outputs; this only rounds
+     * them to the whole microseconds the Servo driver takes.
      */
-    void setOutputs(float throttle_norm, float pitch_cmd, float roll_cmd, float yaw_cmd) {
-        const float base = ESC_IDLE + throttle_norm * (ESC_MAX - ESC_IDLE);
-        const auto out = mixer::mixX(base, pitch_cmd, roll_cmd, yaw_cmd, ESC_MIN, ESC_MAX);
-        authority_limited_ = out.authority_limited;
-        writeMotors((int)(out.fl + 0.5f), (int)(out.fr + 0.5f),
-                    (int)(out.bl + 0.5f), (int)(out.br + 0.5f));
+    void write(const float pwm[4]) {
+        writeMotors((int)(pwm[0] + 0.5f), (int)(pwm[1] + 0.5f),
+                    (int)(pwm[2] + 0.5f), (int)(pwm[3] + 0.5f));
     }
-
-    /** True when the last mix could not deliver the commanded torque. The
-     *  control loop uses it to hold the PID integrators. */
-    bool authorityLimited() const { return authority_limited_; }
 
 private:
     Servo motorFL, motorFR, motorBL, motorBR;
-    bool authority_limited_ = false;
 
     void writeMotors(int fl, int fr, int bl, int br) {
         motorFL.writeMicroseconds(fl);
